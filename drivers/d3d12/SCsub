@@ -124,6 +124,13 @@ if (
     )
     sys.exit(255)
 
+# Ray queries and raytracing stages need a NIR build whose DXIL back end can emit them (the stock
+# godot-nir-static release cannot). Detected from the headers of the library in use, so pointing
+# `mesa_libs` at such a build is all it takes; without one the driver reports raytracing as unsupported.
+dxil_enums_h = Path(mesa_absdir + "/src/microsoft/compiler/dxil_enums.h")
+if dxil_enums_h.is_file() and "DXIL_RESOURCE_KIND_RAYTRACING_ACCELERATION_STRUCTURE" in dxil_enums_h.read_text():
+    env_d3d12_rdd.Append(CPPDEFINES=["D3D12_NIR_RAYTRACING_ENABLED"])
+
 # These defines are inspired by the Meson build scripts in the original repo.
 extra_defines += [
     "__STDC_CONSTANT_MACROS",
