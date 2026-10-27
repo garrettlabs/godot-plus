@@ -1565,6 +1565,7 @@ void GodotPhysXServer3D::step(real_t p_step) {
 }
 
 void GodotPhysXServer3D::flush_queries() {
+	GodotPhysXSoftBody3D::build_pending();
 	if (!active) {
 		return;
 	}
