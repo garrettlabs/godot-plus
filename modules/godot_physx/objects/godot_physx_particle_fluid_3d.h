@@ -108,6 +108,9 @@ private:
 	bool dirty_material = true;
 
 	LocalVector<Vector4> read_scratch; // pos.xyz + inv-mass.w, one per active particle
+	// The positions read back each step (and the foam's), under read_mutex: the node reads them from outside
+	// physics process while the physics thread may be refilling them (physics/3d/run_on_separate_thread).
+	mutable Mutex read_mutex;
 	LocalVector<Vector3> read_positions;
 
 	// GPU isosurface: PhysX marching-cubes a smooth triangle mesh from the
@@ -173,7 +176,7 @@ public:
 	real_t get_foam_threshold() const { return foam_threshold; }
 	real_t get_foam_buoyancy() const { return foam_buoyancy; }
 	real_t get_foam_size() const { return foam_size; }
-	const LocalVector<Vector3> &get_foam_positions() const { return foam_positions; }
+	Vector<Vector3> copy_foam_positions() const;
 	uint32_t get_foam_count() const { return foam_count; }
 
 	// Replace the live particle set with a block at the given positions.
@@ -191,7 +194,7 @@ public:
 	// kernels all get issued before any of them blocks the CPU on a sync -- see
 	// GodotPhysXFluidIsosurface::finish_extraction(). No-op without surface_mesh.
 	void finish_isosurface_extraction();
-	const LocalVector<Vector3> &get_positions() const { return read_positions; }
+	Vector<Vector3> copy_positions() const;
 	uint32_t get_particle_count() const { return active_count; }
 
 	// GPU isosurface mesh (PxIsosurfaceExtractor). Enabling creates the extractor.

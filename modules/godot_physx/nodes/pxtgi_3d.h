@@ -135,6 +135,9 @@ class PXTGI3D : public Node3D {
 	LocalVector<AABB> entry_bounds;
 	LocalVector<uint8_t> entry_valid;
 	HashMap<ObjectID, LocalVector<int>> body_entries; // a physics body's shapes, by its node
+	// The poses of the PhysX bodies awake in the physics steps since the last frame, by their nodes: read during
+	// physics process, where the space may be read even with physics on its own thread.
+	HashMap<ObjectID, Transform3D> moved_poses;
 	LocalVector<int> proxy_entries; // emissive meshes outside any body: checked every frame
 	LocalVector<int> emissive_entries; // shapes that give off light: sampled directly
 	LocalVector<float> ordered_floats; // the records in the tree's leaf order

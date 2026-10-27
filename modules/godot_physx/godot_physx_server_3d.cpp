@@ -84,6 +84,14 @@ GodotPxErrorCallback px_error_callback;
 
 GodotPhysXServer3D *GodotPhysXServer3D::singleton = nullptr;
 
+// The module's nodes call these extensions straight on this server, not through PhysicsServer3DWrapMT: one called
+// from outside physics process is queued for the physics thread, as a PhysicsServer3D call would be.
+#define QUEUE_UNLESS_SAFE(m_call) \
+	if (!can_touch_scene()) { \
+		run_on_physics_thread([=]() { m_call; }); \
+		return; \
+	}
+
 GodotPhysXServer3D::GodotPhysXServer3D() {
 	singleton = this;
 }
@@ -734,6 +742,10 @@ bool GodotPhysXServer3D::body_is_omitting_force_integration(RID p_body) const {
 }
 
 void GodotPhysXServer3D::body_set_state_sync_callback(RID p_body, const Callable &p_callable) {
+	if (p_body == dispatch_body) {
+		p_callable.call(); // a run_on_physics_thread() call, now on the physics thread
+		return;
+	}
 	GodotPhysXBody3D *body = body_owner.get_or_null(p_body);
 	ERR_FAIL_NULL(body);
 	body->set_state_sync_callback(p_callable);
@@ -935,6 +947,7 @@ RID GodotPhysXServer3D::particle_fluid_create() {
 }
 
 void GodotPhysXServer3D::particle_fluid_set_space(RID p_fluid, RID p_space) {
+	QUEUE_UNLESS_SAFE(particle_fluid_set_space(p_fluid, p_space))
 	GodotPhysXParticleFluid3D *fluid = fluid_owner.get_or_null(p_fluid);
 	ERR_FAIL_NULL(fluid);
 	GodotPhysXSpace3D *space = space_owner.get_or_null(p_space);
@@ -942,6 +955,7 @@ void GodotPhysXServer3D::particle_fluid_set_space(RID p_fluid, RID p_space) {
 }
 
 void GodotPhysXServer3D::particle_fluid_set_param(RID p_fluid, int p_param, real_t p_value) {
+	QUEUE_UNLESS_SAFE(particle_fluid_set_param(p_fluid, p_param, p_value))
 	GodotPhysXParticleFluid3D *fluid = fluid_owner.get_or_null(p_fluid);
 	ERR_FAIL_NULL(fluid);
 	ERR_FAIL_INDEX(p_param, GodotPhysXParticleFluid3D::PARAM_MAX);
@@ -949,36 +963,42 @@ void GodotPhysXServer3D::particle_fluid_set_param(RID p_fluid, int p_param, real
 }
 
 void GodotPhysXServer3D::particle_fluid_set_granular(RID p_fluid, bool p_enabled, real_t p_friction) {
+	QUEUE_UNLESS_SAFE(particle_fluid_set_granular(p_fluid, p_enabled, p_friction))
 	GodotPhysXParticleFluid3D *fluid = fluid_owner.get_or_null(p_fluid);
 	ERR_FAIL_NULL(fluid);
 	fluid->set_granular(p_enabled, p_friction);
 }
 
 void GodotPhysXServer3D::particle_fluid_set_capacity(RID p_fluid, int p_max) {
+	QUEUE_UNLESS_SAFE(particle_fluid_set_capacity(p_fluid, p_max))
 	GodotPhysXParticleFluid3D *fluid = fluid_owner.get_or_null(p_fluid);
 	ERR_FAIL_NULL(fluid);
 	fluid->set_capacity(p_max > 0 ? (uint32_t)p_max : 1);
 }
 
 void GodotPhysXServer3D::particle_fluid_set_particles(RID p_fluid, const Vector<Vector3> &p_positions, const Vector3 &p_initial_velocity) {
+	QUEUE_UNLESS_SAFE(particle_fluid_set_particles(p_fluid, p_positions, p_initial_velocity))
 	GodotPhysXParticleFluid3D *fluid = fluid_owner.get_or_null(p_fluid);
 	ERR_FAIL_NULL(fluid);
 	fluid->set_particles(p_positions, p_initial_velocity);
 }
 
 void GodotPhysXServer3D::particle_fluid_emit(RID p_fluid, const Vector<Vector3> &p_positions, const Vector3 &p_velocity) {
+	QUEUE_UNLESS_SAFE(particle_fluid_emit(p_fluid, p_positions, p_velocity))
 	GodotPhysXParticleFluid3D *fluid = fluid_owner.get_or_null(p_fluid);
 	ERR_FAIL_NULL(fluid);
 	fluid->emit(p_positions, p_velocity);
 }
 
 void GodotPhysXServer3D::particle_fluid_clear(RID p_fluid) {
+	QUEUE_UNLESS_SAFE(particle_fluid_clear(p_fluid))
 	GodotPhysXParticleFluid3D *fluid = fluid_owner.get_or_null(p_fluid);
 	ERR_FAIL_NULL(fluid);
 	fluid->clear();
 }
 
 void GodotPhysXServer3D::particle_fluid_set_foam(RID p_fluid, bool p_enabled, int p_capacity, real_t p_lifetime, real_t p_threshold, real_t p_buoyancy, real_t p_size) {
+	QUEUE_UNLESS_SAFE(particle_fluid_set_foam(p_fluid, p_enabled, p_capacity, p_lifetime, p_threshold, p_buoyancy, p_size))
 	GodotPhysXParticleFluid3D *fluid = fluid_owner.get_or_null(p_fluid);
 	ERR_FAIL_NULL(fluid);
 	fluid->set_foam_capacity(p_capacity > 0 ? (uint32_t)p_capacity : 1);
@@ -992,13 +1012,7 @@ void GodotPhysXServer3D::particle_fluid_set_foam(RID p_fluid, bool p_enabled, in
 Vector<Vector3> GodotPhysXServer3D::particle_fluid_get_foam_positions(RID p_fluid) const {
 	GodotPhysXParticleFluid3D *fluid = fluid_owner.get_or_null(p_fluid);
 	ERR_FAIL_NULL_V(fluid, Vector<Vector3>());
-	const LocalVector<Vector3> &src = fluid->get_foam_positions();
-	Vector<Vector3> out;
-	out.resize(src.size());
-	if (src.size() > 0) {
-		memcpy(out.ptrw(), src.ptr(), src.size() * sizeof(Vector3));
-	}
-	return out;
+	return fluid->copy_foam_positions();
 }
 
 int GodotPhysXServer3D::particle_fluid_get_foam_count(RID p_fluid) const {
@@ -1008,12 +1022,14 @@ int GodotPhysXServer3D::particle_fluid_get_foam_count(RID p_fluid) const {
 }
 
 void GodotPhysXServer3D::particle_fluid_set_surface_mesh(RID p_fluid, bool p_enabled) {
+	QUEUE_UNLESS_SAFE(particle_fluid_set_surface_mesh(p_fluid, p_enabled))
 	GodotPhysXParticleFluid3D *fluid = fluid_owner.get_or_null(p_fluid);
 	ERR_FAIL_NULL(fluid);
 	fluid->set_surface_mesh_enabled(p_enabled);
 }
 
 void GodotPhysXServer3D::particle_fluid_set_surface_anisotropy(RID p_fluid, bool p_enabled) {
+	QUEUE_UNLESS_SAFE(particle_fluid_set_surface_anisotropy(p_fluid, p_enabled))
 	GodotPhysXParticleFluid3D *fluid = fluid_owner.get_or_null(p_fluid);
 	ERR_FAIL_NULL(fluid);
 	fluid->set_surface_anisotropy_enabled(p_enabled);
@@ -1070,13 +1086,7 @@ int GodotPhysXServer3D::particle_fluid_get_foam_mesh(RID p_fluid, PackedVector3A
 Vector<Vector3> GodotPhysXServer3D::particle_fluid_get_positions(RID p_fluid) const {
 	GodotPhysXParticleFluid3D *fluid = fluid_owner.get_or_null(p_fluid);
 	ERR_FAIL_NULL_V(fluid, Vector<Vector3>());
-	const LocalVector<Vector3> &src = fluid->get_positions();
-	Vector<Vector3> out;
-	out.resize(src.size());
-	if (src.size() > 0) {
-		memcpy(out.ptrw(), src.ptr(), src.size() * sizeof(Vector3));
-	}
-	return out;
+	return fluid->copy_positions();
 }
 
 int GodotPhysXServer3D::particle_fluid_get_particle_count(RID p_fluid) const {
@@ -1104,36 +1114,42 @@ RID GodotPhysXServer3D::cloth_create() {
 }
 
 void GodotPhysXServer3D::cloth_set_space(RID p_cloth, RID p_space) {
+	QUEUE_UNLESS_SAFE(cloth_set_space(p_cloth, p_space))
 	GodotPhysXCloth3D *cloth = cloth_owner.get_or_null(p_cloth);
 	ERR_FAIL_NULL(cloth);
 	cloth->set_space(space_owner.get_or_null(p_space));
 }
 
 void GodotPhysXServer3D::cloth_set_params(RID p_cloth, real_t p_thickness, real_t p_density, real_t p_stretch, real_t p_bend, real_t p_damping, uint32_t p_collision_mask) {
+	QUEUE_UNLESS_SAFE(cloth_set_params(p_cloth, p_thickness, p_density, p_stretch, p_bend, p_damping, p_collision_mask))
 	GodotPhysXCloth3D *cloth = cloth_owner.get_or_null(p_cloth);
 	ERR_FAIL_NULL(cloth);
 	cloth->set_params(p_thickness, p_density, p_stretch, p_bend, p_damping, p_collision_mask);
 }
 
 void GodotPhysXServer3D::cloth_build(RID p_cloth, const Vector<Vector3> &p_positions, const Vector<int32_t> &p_indices, const Transform3D &p_xform) {
+	QUEUE_UNLESS_SAFE(cloth_build(p_cloth, p_positions, p_indices, p_xform))
 	GodotPhysXCloth3D *cloth = cloth_owner.get_or_null(p_cloth);
 	ERR_FAIL_NULL(cloth);
 	cloth->build(p_positions, p_indices, p_xform);
 }
 
 void GodotPhysXServer3D::cloth_set_pinned(RID p_cloth, const Vector<int32_t> &p_pinned) {
+	QUEUE_UNLESS_SAFE(cloth_set_pinned(p_cloth, p_pinned))
 	GodotPhysXCloth3D *cloth = cloth_owner.get_or_null(p_cloth);
 	ERR_FAIL_NULL(cloth);
 	cloth->set_pinned(p_pinned);
 }
 
 void GodotPhysXServer3D::cloth_set_pin_targets(RID p_cloth, const Vector<Vector3> &p_world_targets) {
+	QUEUE_UNLESS_SAFE(cloth_set_pin_targets(p_cloth, p_world_targets))
 	GodotPhysXCloth3D *cloth = cloth_owner.get_or_null(p_cloth);
 	ERR_FAIL_NULL(cloth);
 	cloth->set_pin_targets(p_world_targets);
 }
 
 void GodotPhysXServer3D::cloth_apply_wind(RID p_cloth, const Vector3 &p_wind, real_t p_drag, real_t p_lift, real_t p_dt) {
+	QUEUE_UNLESS_SAFE(cloth_apply_wind(p_cloth, p_wind, p_drag, p_lift, p_dt))
 	GodotPhysXCloth3D *cloth = cloth_owner.get_or_null(p_cloth);
 	ERR_FAIL_NULL(cloth);
 	cloth->apply_wind(p_wind, p_drag, p_lift, p_dt);
@@ -1423,6 +1439,7 @@ void GodotPhysXServer3D::soft_body_apply_central_force(RID p_body, const Vector3
 /* MISC */
 
 void GodotPhysXServer3D::free_rid(RID p_rid) {
+	QUEUE_UNLESS_SAFE(free_rid(p_rid)) // (a node freeing its fluid, cloth or vehicle identity directly)
 	if (GodotPhysXShape3D *shape = shape_owner.get_or_null(p_rid)) {
 		// Whoever still uses it drops it (they kept a dangling pointer before).
 		LocalVector<GodotPhysXBody3D *> bodies;
@@ -1489,6 +1506,7 @@ void GodotPhysXServer3D::set_active(bool p_active) {
 
 void GodotPhysXServer3D::init() {
 	PhysicsServer3DDummy::init();
+	server_thread = Thread::get_caller_id(); // the physics thread with run_on_separate_thread, else the main one
 
 	GodotPhysXProjectSettings::read_settings();
 
@@ -1547,6 +1565,8 @@ void GodotPhysXServer3D::init() {
 	print_verbose(vformat("PhysX %d.%d.%d initialized%s.",
 			PX_PHYSICS_VERSION_MAJOR, PX_PHYSICS_VERSION_MINOR, PX_PHYSICS_VERSION_BUGFIX,
 			px_cuda ? " [GPU]" : ""));
+
+	dispatch_body = body_create();
 }
 
 void GodotPhysXServer3D::step(real_t p_step) {
@@ -1564,6 +1584,14 @@ void GodotPhysXServer3D::step(real_t p_step) {
 	}
 }
 
+void GodotPhysXServer3D::sync() {
+	syncing = true; // the physics thread is parked until end_sync()
+}
+
+void GodotPhysXServer3D::end_sync() {
+	syncing = false;
+}
+
 void GodotPhysXServer3D::flush_queries() {
 	GodotPhysXSoftBody3D::build_pending();
 	if (!active) {
@@ -1577,6 +1605,10 @@ void GodotPhysXServer3D::flush_queries() {
 }
 
 void GodotPhysXServer3D::finish() {
+	if (dispatch_body.is_valid()) {
+		free_rid(dispatch_body);
+		dispatch_body = RID();
+	}
 	GodotPhysXSpace3D::flush_material_releases(); // (bodies freed since the last step)
 	if (px_cuda) {
 		px_cuda->release();

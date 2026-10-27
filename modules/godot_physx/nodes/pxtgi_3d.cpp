@@ -316,6 +316,7 @@ void PXTGI3D::_activate() {
 	get_tree()->connect("node_added", callable_mp(this, &PXTGI3D::_node_added));
 	get_tree()->connect("node_removed", callable_mp(this, &PXTGI3D::_node_removed));
 	set_process_internal(true);
+	set_physics_process_internal(true);
 }
 
 // Out of the world or hidden: Godot's own GI back (the last such node restores its GI step).
@@ -325,6 +326,8 @@ void PXTGI3D::_deactivate() {
 	}
 	active = false;
 	set_process_internal(false);
+	set_physics_process_internal(false);
+	moved_poses.clear();
 	get_tree()->disconnect("node_added", callable_mp(this, &PXTGI3D::_node_added));
 	get_tree()->disconnect("node_removed", callable_mp(this, &PXTGI3D::_node_removed));
 	tracked.clear();
@@ -1259,9 +1262,9 @@ void PXTGI3D::_update_primitives(PhysXGIEffect::Snapshot &r_snapshot) {
 		}
 		rebuild = true;
 	} else {
-		// Each candidate with the PhysX body that moved it (its shapes placed from the body's pose), or none (read from
+		// Each candidate with the pose of the PhysX body that moved it (its shapes placed from it), or none (read from
 		// its node).
-		LocalVector<Pair<int, const GodotPhysXBody3D *>> candidates;
+		LocalVector<Pair<int, const Transform3D *>> candidates;
 		GodotPhysXSpace3D *space = physx_space(this);
 		LocalVector<int> restyled;
 		_restyle_slice(restyled);
@@ -1273,10 +1276,10 @@ void PXTGI3D::_update_primitives(PhysXGIEffect::Snapshot &r_snapshot) {
 				candidates.push_back({ i, nullptr });
 			}
 		} else {
-			for (GodotPhysXBody3D *body : space->get_awake_bodies()) {
-				if (const LocalVector<int> *list = body_entries.getptr(body->get_instance_id())) {
+			for (const KeyValue<ObjectID, Transform3D> &E : moved_poses) {
+				if (const LocalVector<int> *list = body_entries.getptr(E.key)) {
 					for (int i : *list) {
-						candidates.push_back({ i, body });
+						candidates.push_back({ i, &E.value });
 					}
 				}
 			}
@@ -1291,12 +1294,12 @@ void PXTGI3D::_update_primitives(PhysXGIEffect::Snapshot &r_snapshot) {
 		}
 		float scratch[PF];
 		AABB bounds;
-		for (const Pair<int, const GodotPhysXBody3D *> &c : candidates) {
+		for (const Pair<int, const Transform3D *> &c : candidates) {
 			const int i = c.first;
 			const ShapeEntry &entry = shapes[i];
 			bool valid;
 			if (c.second && entry.posed && entry_valid[i]) {
-				_pack_entry(i, c.second->get_transform() * entry.in_body, entry.type, entry.extents, scratch, bounds);
+				_pack_entry(i, *c.second * entry.in_body, entry.type, entry.extents, scratch, bounds);
 				valid = true;
 			} else {
 				valid = _refresh_entry(i, scratch, bounds);
@@ -1398,6 +1401,7 @@ void PXTGI3D::_update_primitives(PhysXGIEffect::Snapshot &r_snapshot) {
 	r_snapshot.nodes = published_nodes;
 	r_snapshot.node_count = published_nodes.size() / PhysXGIEffect::NODE_FLOATS;
 	r_snapshot.primitives_version = primitives_version;
+	moved_poses.clear();
 }
 
 void PXTGI3D::_publish() {
@@ -1577,6 +1581,14 @@ void PXTGI3D::_notification(int p_what) {
 				_activate();
 			} else {
 				_deactivate();
+			}
+		} break;
+		case NOTIFICATION_INTERNAL_PHYSICS_PROCESS: {
+			// The physics thread is parked here: the bodies PhysX moved are read now, placed in the next frame.
+			if (GodotPhysXSpace3D *space = physx_space(this)) {
+				for (const GodotPhysXBody3D *body : space->get_awake_bodies()) {
+					moved_poses[body->get_instance_id()] = body->get_transform();
+				}
 			}
 		} break;
 		case NOTIFICATION_INTERNAL_PROCESS: {

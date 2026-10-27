@@ -49,6 +49,13 @@
 // is configured, so tire_grip scales the tires' own friction -- through
 // _control_built(), which also binds the identity; _control_unbind() before the
 // chassis actor goes, _control_free() in the destructor.
+//
+// With physics/3d/run_on_separate_thread the PhysX scene steps on its own thread,
+// so the chassis actor is touched only where it may be (see
+// GodotPhysXServer3D::run_on_physics_thread()): writes are queued in order for
+// that thread, building and freeing wait for it, and the getters read the actor
+// live in physics process and otherwise the state cached at the end of it
+// (_cache_chassis()), as RigidBody3D's do.
 
 #include "../godot_physx_conversions.h"
 #include "../godot_physx_server_3d.h"
@@ -106,6 +113,16 @@ private: \
 	physx::PxRigidDynamic *_control_body() const; \
 	void _store_tire_grip_base(); \
 	void _apply_tire_grip(); \
+	/* The chassis state as of the end of the last physics process, for the getters outside it. */ \
+	physx::PxTransform chassis_pose = physx::PxTransform(physx::PxIdentity); \
+	physx::PxVec3 chassis_linear_velocity = physx::PxVec3(0.0f); \
+	physx::PxVec3 chassis_angular_velocity = physx::PxVec3(0.0f); \
+	bool chassis_sleeping = false; \
+	void _cache_chassis(); \
+	physx::PxTransform _chassis_pose() const; \
+	physx::PxVec3 _chassis_linear_velocity() const; \
+	physx::PxVec3 _chassis_angular_velocity() const; \
+	bool _chassis_sleeping() const; \
 \
 public:
 
@@ -113,49 +130,74 @@ public:
 	physx::PxRigidDynamic *m_class::_control_body() const { \
 		return impl->built ? impl->vehicle.physxActor.rigidBody->is<physx::PxRigidDynamic>() : nullptr; \
 	} \
+	void m_class::_cache_chassis() { \
+		if (physx::PxRigidDynamic *b = _control_body()) { \
+			chassis_pose = b->getGlobalPose(); \
+			chassis_linear_velocity = b->getLinearVelocity(); \
+			chassis_angular_velocity = b->getAngularVelocity(); \
+			chassis_sleeping = b->isSleeping(); \
+		} \
+	} \
+	physx::PxTransform m_class::_chassis_pose() const { \
+		physx::PxRigidDynamic *b = _control_body(); \
+		return b != nullptr && GodotPhysXServer3D::can_touch_scene() ? b->getGlobalPose() : chassis_pose; \
+	} \
+	physx::PxVec3 m_class::_chassis_linear_velocity() const { \
+		physx::PxRigidDynamic *b = _control_body(); \
+		return b != nullptr && GodotPhysXServer3D::can_touch_scene() ? b->getLinearVelocity() : chassis_linear_velocity; \
+	} \
+	physx::PxVec3 m_class::_chassis_angular_velocity() const { \
+		physx::PxRigidDynamic *b = _control_body(); \
+		return b != nullptr && GodotPhysXServer3D::can_touch_scene() ? b->getAngularVelocity() : chassis_angular_velocity; \
+	} \
+	bool m_class::_chassis_sleeping() const { \
+		physx::PxRigidDynamic *b = _control_body(); \
+		return b != nullptr && GodotPhysXServer3D::can_touch_scene() ? b->isSleeping() : chassis_sleeping; \
+	} \
 	void m_class::apply_central_force(const Vector3 &p_force) { \
 		if (physx::PxRigidDynamic *b = _control_body()) { \
-			b->addForce(to_px(p_force), physx::PxForceMode::eFORCE); \
+			GodotPhysXServer3D::run_on_physics_thread([=]() { b->addForce(to_px(p_force), physx::PxForceMode::eFORCE); }); \
 		} \
 	} \
 	void m_class::apply_force(const Vector3 &p_force, const Vector3 &p_position) { \
 		if (physx::PxRigidDynamic *b = _control_body()) { \
-			physx::PxRigidBodyExt::addForceAtPos(*b, to_px(p_force), b->getGlobalPose().p + to_px(p_position), physx::PxForceMode::eFORCE); \
+			GodotPhysXServer3D::run_on_physics_thread([=]() { physx::PxRigidBodyExt::addForceAtPos(*b, to_px(p_force), b->getGlobalPose().p + to_px(p_position), physx::PxForceMode::eFORCE); }); \
 		} \
 	} \
 	void m_class::apply_torque(const Vector3 &p_torque) { \
 		if (physx::PxRigidDynamic *b = _control_body()) { \
-			b->addTorque(to_px(p_torque), physx::PxForceMode::eFORCE); \
+			GodotPhysXServer3D::run_on_physics_thread([=]() { b->addTorque(to_px(p_torque), physx::PxForceMode::eFORCE); }); \
 		} \
 	} \
 	void m_class::apply_central_impulse(const Vector3 &p_impulse) { \
 		if (physx::PxRigidDynamic *b = _control_body()) { \
-			b->addForce(to_px(p_impulse), physx::PxForceMode::eIMPULSE); \
+			GodotPhysXServer3D::run_on_physics_thread([=]() { b->addForce(to_px(p_impulse), physx::PxForceMode::eIMPULSE); }); \
 		} \
 	} \
 	void m_class::apply_impulse(const Vector3 &p_impulse, const Vector3 &p_position) { \
 		if (physx::PxRigidDynamic *b = _control_body()) { \
-			physx::PxRigidBodyExt::addForceAtPos(*b, to_px(p_impulse), b->getGlobalPose().p + to_px(p_position), physx::PxForceMode::eIMPULSE); \
+			GodotPhysXServer3D::run_on_physics_thread([=]() { physx::PxRigidBodyExt::addForceAtPos(*b, to_px(p_impulse), b->getGlobalPose().p + to_px(p_position), physx::PxForceMode::eIMPULSE); }); \
 		} \
 	} \
 	void m_class::apply_torque_impulse(const Vector3 &p_impulse) { \
 		if (physx::PxRigidDynamic *b = _control_body()) { \
-			b->addTorque(to_px(p_impulse), physx::PxForceMode::eIMPULSE); \
+			GodotPhysXServer3D::run_on_physics_thread([=]() { b->addTorque(to_px(p_impulse), physx::PxForceMode::eIMPULSE); }); \
 		} \
 	} \
 	void m_class::set_linear_velocity(const Vector3 &p_velocity) { \
 		if (physx::PxRigidDynamic *b = _control_body()) { \
-			b->setLinearVelocity(to_px(p_velocity)); \
+			chassis_linear_velocity = to_px(p_velocity); \
+			GodotPhysXServer3D::run_on_physics_thread([=]() { b->setLinearVelocity(to_px(p_velocity)); }); \
 		} \
 	} \
 	void m_class::set_angular_velocity(const Vector3 &p_velocity) { \
 		if (physx::PxRigidDynamic *b = _control_body()) { \
-			b->setAngularVelocity(to_px(p_velocity)); \
+			chassis_angular_velocity = to_px(p_velocity); \
+			GodotPhysXServer3D::run_on_physics_thread([=]() { b->setAngularVelocity(to_px(p_velocity)); }); \
 		} \
 	} \
 	Vector3 m_class::get_angular_velocity() const { \
-		physx::PxRigidDynamic *b = _control_body(); \
-		return b != nullptr ? to_godot(b->getAngularVelocity()) : Vector3(); \
+		return _control_body() != nullptr ? to_godot(_chassis_angular_velocity()) : Vector3(); \
 	} \
 	void m_class::teleport(const Transform3D &p_transform, bool p_keep_velocity) { \
 		physx::PxRigidDynamic *b = _control_body(); \
@@ -164,18 +206,26 @@ public:
 			return; \
 		} \
 		/* The chassis moves in place: same actor, wheels and settings, nothing rebuilt. */ \
-		b->setGlobalPose(to_px(p_transform)); \
+		const physx::PxTransform pose = to_px(p_transform); \
+		GodotPhysXServer3D::run_on_physics_thread([=]() { \
+			b->setGlobalPose(pose); \
+			if (!p_keep_velocity) { \
+				b->setLinearVelocity(physx::PxVec3(0.0f)); \
+				b->setAngularVelocity(physx::PxVec3(0.0f)); \
+			} \
+			b->wakeUp(); \
+		}); \
+		chassis_pose = pose; \
 		if (!p_keep_velocity) { \
-			b->setLinearVelocity(physx::PxVec3(0.0f)); \
-			b->setAngularVelocity(physx::PxVec3(0.0f)); \
+			chassis_linear_velocity = physx::PxVec3(0.0f); \
+			chassis_angular_velocity = physx::PxVec3(0.0f); \
 			/* And the wheels stop spinning; no tire stays "stuck" from before. */ \
 			for (uint32_t i = 0; i < (uint32_t)(m_wheel_count); i++) { \
 				impl->vehicle.wheelRigidBody1dStates[i].setToDefault(); \
 				impl->vehicle.tireStickyStates[i].setToDefault(); \
 			} \
 		} \
-		b->wakeUp(); \
-		set_global_transform(to_godot(b->getGlobalPose())); \
+		set_global_transform(to_godot(pose)); \
 	} \
 	void m_class::set_tire_grip(real_t p_grip) { \
 		tire_grip = MAX(p_grip, (real_t)0.0); \
@@ -238,14 +288,14 @@ public:
 		const RID other = godot_physx_vehicle_exception_rid(p_node); \
 		ERR_FAIL_COND_MSG(!other.is_valid(), "Collision exception only works with a PhysicsBody3D or a PhysX vehicle."); \
 		if (GodotPhysXBody3D *body = _proxy_body()) { \
-			body->add_collision_exception(other); \
+			GodotPhysXServer3D::run_on_physics_thread([=]() { body->add_collision_exception(other); }); \
 		} \
 	} \
 	void m_class::remove_collision_exception_with(Node *p_node) { \
 		const RID other = godot_physx_vehicle_exception_rid(p_node); \
 		ERR_FAIL_COND_MSG(!other.is_valid(), "Collision exception only works with a PhysicsBody3D or a PhysX vehicle."); \
 		if (GodotPhysXBody3D *body = _proxy_body()) { \
-			body->remove_collision_exception(other); \
+			GodotPhysXServer3D::run_on_physics_thread([=]() { body->remove_collision_exception(other); }); \
 		} \
 	} \
 	TypedArray<Node> m_class::get_collision_exceptions() const { \
@@ -255,7 +305,14 @@ public:
 		if (body == nullptr) { \
 			return out; \
 		} \
-		for (const RID &rid : body->get_collision_exceptions()) { \
+		LocalVector<RID> exceptions; \
+		GodotPhysXServer3D::run_on_physics_thread([&]() { \
+			for (const RID &rid : body->get_collision_exceptions()) { \
+				exceptions.push_back(rid); \
+			} \
+		}, \
+				true); \
+		for (const RID &rid : exceptions) { \
 			const GodotPhysXBody3D *other = server->get_body(rid); \
 			if (Node *node = other ? Object::cast_to<Node>(ObjectDB::get_instance(other->get_instance_id())) : nullptr) { \
 				out.push_back(node); \

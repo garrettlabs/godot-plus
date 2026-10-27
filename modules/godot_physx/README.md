@@ -250,7 +250,7 @@ Under `physics/physx_3d/simulation/`:
 | --- | --- | --- |
 | `solver_type` | `PGS` | `PGS` is PhysX's classic solver and matches the other backends' feel in large rigid-body scenes. `TGS` is steadier for joint chains under sustained external forces (wind, thrusters) but can be looser on joints in big mixed piles. GPU soft bodies need `TGS` for firm soft-vs-soft contact. |
 | `enhanced_determinism` | `false` | Makes the CPU simulation reproducible across runs on the same binary and platform, independent of worker-thread count and API call order. It is **not** cross-platform deterministic and has a performance cost. Enabling it forces the CPU solver even when a CUDA device is present, because the GPU solver is never deterministic. |
-| `gpu_dynamics` | `true` | GPU builds only. When off, no CUDA context is made and the scene runs on the CPU solver, as on a machine without CUDA (`PhysX.is_gpu_available()` is `false`). Every step waits for the GPU's results, so the CPU solver can be faster when the GPU is busy with other work (heavy rendering, a voice or language model on the same card) or the scene has few awake bodies but many joints, such as ragdolls. The GPU features fall back as they do without CUDA: `PhysXParticleFluid3D` and `PhysXGranular3D` on `Auto` use the MPM solver (compute shaders, any GPU), `PhysXCloth3D` on `Auto` uses its CPU solver, `SoftBody3D` on `Auto` runs on the CPU, and `PhysXSkinnedCloth3D` never needed CUDA. Measure both in your own scene. |
+| `gpu_dynamics` | `true` | GPU builds only. When off, no CUDA context is made and the scene runs on the CPU solver, as on a machine without CUDA (`PhysX.is_gpu_available()` is `false`). Every step waits for the GPU's results, so the CPU solver can be faster when the GPU is busy with other work (heavy rendering, a voice or language model on the same card) or the scene has few awake bodies but many joints, such as ragdolls. The GPU features fall back as they do without CUDA: `PhysXParticleFluid3D` and `PhysXGranular3D` on `Auto` use the MPM solver (compute shaders, any GPU), `PhysXCloth3D` on `Auto` uses its CPU solver, `SoftBody3D` on `Auto` runs on the CPU, and `PhysXSkinnedCloth3D` never needed CUDA. On the example project's playground (RTX 5070) the GPU path stepped a ball pile in 8–9.5 ms against the CPU's 11 ms with the GPU idle, but 21–23 ms against 7.6 ms with another program keeping the GPU about 90% busy. Measure both in your own scene. |
 | `allow_sleep` | `true` | When off, no rigid body ever sleeps — the same as turning `RigidBody3D.can_sleep` off on every body. Useful for debugging or setups that need every body integrated every step. |
 | `stabilization` | `true` | `PxSceneFlag::eENABLE_STABILIZATION` — damps low-mass stacked bodies toward rest so piles settle and sleep instead of jittering. Turn it off if it causes visible drift on very light bodies. |
 | `max_depenetration_velocity` | `0.0` | The fastest (m/s) overlapping rigid bodies are pushed apart. `0` (the default) = unlimited, PhysX's own default. A cap (around `4`) lets bodies that start inside each other (spawns, a growing shape) ease apart instead of popping, but stacks and piles then sink into each other and slump: tall stacks of loose boxes no longer hold. Applies to `RigidBody3D`-style bodies, not to vehicles, cloth or fluids. |
@@ -262,6 +262,17 @@ And `physics/physx_3d/soft_body/mode` — `Auto` / `CPU` / `GPU` for the stock
 The standard `physics/3d/sleep_threshold_linear`, `sleep_threshold_angular` and
 `time_before_sleep` project settings also apply — they are mapped onto PhysX's
 sleep energy threshold and wake counter.
+
+### Physics on its own thread
+
+The standard `physics/3d/run_on_separate_thread` setting is supported: the
+PhysX step runs on the physics server's thread while the main thread processes
+and renders the next frame. The module's own nodes (vehicles, `PhysXCloth3D`,
+`PhysXParticleFluid3D`, `PXTGI3D`) follow the same rules as the stock bodies:
+what they change outside `_physics_process()` reaches PhysX in order before
+the next step, and the vehicles' getters read outside it return the state as
+of the end of the last `_physics_process()`, as `RigidBody3D`'s do. Inside
+`_physics_process()` everything reads and writes the live simulation.
 
 ## Lens dirt — `PhysXLensDirt3D`
 
