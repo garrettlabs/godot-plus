@@ -819,7 +819,9 @@ void PhysXParticleFluid3D::spawn() {
 
 	if (_mpm_path()) {
 		_mpm_configure();
-		spawned = mpm != nullptr && mpm->is_available();
+		// Not is_available(): with rendering on its own thread the build hasn't
+		// run yet, and the per-step guards cover the warm-up.
+		spawned = _mpm_configured;
 		return;
 	}
 

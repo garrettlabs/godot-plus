@@ -30,6 +30,7 @@
 
 #include "physx_fluid_render_effect.h"
 
+#include "../godot_physx_render_thread.h"
 #include "physx_compositor_effects.h"
 
 #include "core/config/engine.h"
@@ -66,11 +67,6 @@ uint64_t PhysXFluidRenderEffect::ready_since = UINT64_MAX;
 namespace {
 
 Ref<PhysXFluidRenderEffect> shared_effect;
-// The last reference let go ON THE RENDER THREAD: the destructor frees
-// RenderingDevice resources, which only that thread may do.
-void release_shared_on_render_thread() {
-	shared_effect.unref();
-}
 
 enum Pass {
 	PASS_CLEAR,
@@ -755,11 +751,6 @@ void PhysXFluidRenderEffect::free_shared() {
 	textures_hooked = false;
 	proxies_shown = false;
 	ready_since = UINT64_MAX;
-	RenderingServer *rs = RenderingServer::get_singleton();
-	if (shared_effect.is_valid() && rs != nullptr) {
-		rs->call_on_render_thread(callable_mp_static(&release_shared_on_render_thread));
-		rs->sync();
-	}
 	shared_effect.unref();
 }
 
@@ -773,30 +764,33 @@ PhysXFluidRenderEffect::PhysXFluidRenderEffect() {
 }
 
 PhysXFluidRenderEffect::~PhysXFluidRenderEffect() {
-	RenderingDevice *rd = RenderingServer::get_singleton() ? RenderingServer::get_singleton()->get_rendering_device() : nullptr;
-	if (rd == nullptr) {
-		return;
-	}
-	_free_targets(rd, true);
-	for (const Retired &r : retired) {
-		rd->free_rid(r.rid);
-	}
-	for (int i = 0; i < PASS_MAX; i++) {
-		if (pipelines[i].is_valid()) {
-			rd->free_rid(pipelines[i]);
+	// Freed on the render thread, wherever the last reference goes.
+	godot_physx_run_on_render_thread([this]() {
+		RenderingDevice *rd = RenderingServer::get_singleton() ? RenderingServer::get_singleton()->get_rendering_device() : nullptr;
+		if (rd == nullptr) {
+			return;
 		}
-		if (shaders[i].is_valid()) {
-			rd->free_rid(shaders[i]);
+		_free_targets(rd, true);
+		for (const Retired &r : retired) {
+			rd->free_rid(r.rid);
 		}
-	}
-	for (const KeyValue<int64_t, RID> &kv : write_pipelines) {
-		rd->free_rid(kv.value);
-	}
-	for (RID r : { write_shader, linear_sampler, point_sampler, params_buffer, points_buffer, foam_buffer }) {
-		if (r.is_valid()) {
-			rd->free_rid(r);
+		for (int i = 0; i < PASS_MAX; i++) {
+			if (pipelines[i].is_valid()) {
+				rd->free_rid(pipelines[i]);
+			}
+			if (shaders[i].is_valid()) {
+				rd->free_rid(shaders[i]);
+			}
 		}
-	}
+		for (const KeyValue<int64_t, RID> &kv : write_pipelines) {
+			rd->free_rid(kv.value);
+		}
+		for (RID r : { write_shader, linear_sampler, point_sampler, params_buffer, points_buffer, foam_buffer }) {
+			if (r.is_valid()) {
+				rd->free_rid(r);
+			}
+		}
+	});
 }
 
 bool PhysXFluidRenderEffect::_ensure(RenderingDevice *p_rd) {

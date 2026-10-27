@@ -30,6 +30,7 @@
 
 #include "physx_gi_effect.h"
 
+#include "../godot_physx_render_thread.h"
 #include "physx_compositor_effects.h"
 
 #include "core/object/callable_mp.h"
@@ -1571,23 +1572,26 @@ PhysXGIEffect::PhysXGIEffect() {
 }
 
 PhysXGIEffect::~PhysXGIEffect() {
-	RenderingDevice *rd = RenderingServer::get_singleton() ? RenderingServer::get_singleton()->get_rendering_device() : nullptr;
-	if (rd == nullptr) {
-		return;
-	}
-	for (int i = 0; i < PASS_MAX; i++) {
-		if (pipelines[i].is_valid()) {
-			rd->free_rid(pipelines[i]);
+	// Freed on the render thread, wherever the last reference goes.
+	godot_physx_run_on_render_thread([this]() {
+		RenderingDevice *rd = RenderingServer::get_singleton() ? RenderingServer::get_singleton()->get_rendering_device() : nullptr;
+		if (rd == nullptr) {
+			return;
 		}
-		if (shaders[i].is_valid()) {
-			rd->free_rid(shaders[i]);
+		for (int i = 0; i < PASS_MAX; i++) {
+			if (pipelines[i].is_valid()) {
+				rd->free_rid(pipelines[i]);
+			}
+			if (shaders[i].is_valid()) {
+				rd->free_rid(shaders[i]);
+			}
 		}
-	}
-	for (RID r : { linear_sampler, nearest_sampler, data_buffer, primitive_buffer, node_buffer, cache_keys, cache_cells, geometry_buffer }) {
-		if (r.is_valid()) {
-			rd->free_rid(r);
+		for (RID r : { linear_sampler, nearest_sampler, data_buffer, primitive_buffer, node_buffer, cache_keys, cache_cells, geometry_buffer }) {
+			if (r.is_valid()) {
+				rd->free_rid(r);
+			}
 		}
-	}
+	});
 }
 
 bool PhysXGIEffect::_ensure(RenderingDevice *p_rd) {

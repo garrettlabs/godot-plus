@@ -30,6 +30,7 @@
 
 #include "physx_light_shafts_effect.h"
 
+#include "../godot_physx_render_thread.h"
 #include "physx_compositor_effects.h"
 
 #include "core/object/callable_mp.h"
@@ -289,28 +290,31 @@ PhysXLightShaftsEffect::PhysXLightShaftsEffect() {
 }
 
 PhysXLightShaftsEffect::~PhysXLightShaftsEffect() {
-	RenderingDevice *rd = RenderingServer::get_singleton() ? RenderingServer::get_singleton()->get_rendering_device() : nullptr;
-	if (rd == nullptr) {
-		return;
-	}
-	_free_targets(rd);
-	if (backdrop.is_valid()) {
-		rd->free_rid(backdrop);
-	}
-	for (const KeyValue<int64_t, RID> &kv : composite_pipelines) {
-		rd->free_rid(kv.value);
-	}
-	for (int i = 0; i < PASS_MAX; i++) {
-		if (pipelines[i].is_valid()) {
-			rd->free_rid(pipelines[i]);
+	// Freed on the render thread, wherever the last reference goes.
+	godot_physx_run_on_render_thread([this]() {
+		RenderingDevice *rd = RenderingServer::get_singleton() ? RenderingServer::get_singleton()->get_rendering_device() : nullptr;
+		if (rd == nullptr) {
+			return;
 		}
-		if (shaders[i].is_valid()) {
-			rd->free_rid(shaders[i]);
+		_free_targets(rd);
+		if (backdrop.is_valid()) {
+			rd->free_rid(backdrop);
 		}
-	}
-	if (linear_sampler.is_valid()) {
-		rd->free_rid(linear_sampler);
-	}
+		for (const KeyValue<int64_t, RID> &kv : composite_pipelines) {
+			rd->free_rid(kv.value);
+		}
+		for (int i = 0; i < PASS_MAX; i++) {
+			if (pipelines[i].is_valid()) {
+				rd->free_rid(pipelines[i]);
+			}
+			if (shaders[i].is_valid()) {
+				rd->free_rid(shaders[i]);
+			}
+		}
+		if (linear_sampler.is_valid()) {
+			rd->free_rid(linear_sampler);
+		}
+	});
 }
 
 bool PhysXLightShaftsEffect::_ensure(RenderingDevice *p_rd) {

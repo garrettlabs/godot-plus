@@ -30,6 +30,7 @@
 
 #include "physx_flow_render_effect.h"
 
+#include "../godot_physx_render_thread.h"
 #include "../nodes/physx_compositor_effects.h"
 #include "../nodes/physx_light_shafts_effect.h"
 #include "flow_backend.h"
@@ -55,11 +56,6 @@ HashMap<ObjectID, int> PhysXFlowRenderEffect::worlds;
 namespace {
 
 Ref<PhysXFlowRenderEffect> shared_effect;
-// The last reference let go ON THE RENDER THREAD: the destructor frees
-// RenderingDevice resources, which only that thread may do.
-void release_shared_on_render_thread() {
-	shared_effect.unref();
-}
 
 const char *COPY_SHADER = R"(
 #[compute]
@@ -176,11 +172,6 @@ Ref<PhysXFlowRenderEffect> PhysXFlowRenderEffect::get_shared() {
 }
 
 void PhysXFlowRenderEffect::free_shared() {
-	RenderingServer *rs = RenderingServer::get_singleton();
-	if (shared_effect.is_valid() && rs != nullptr) {
-		rs->call_on_render_thread(callable_mp_static(&release_shared_on_render_thread));
-		rs->sync();
-	}
 	shared_effect.unref();
 }
 
@@ -193,21 +184,24 @@ PhysXFlowRenderEffect::PhysXFlowRenderEffect() {
 }
 
 PhysXFlowRenderEffect::~PhysXFlowRenderEffect() {
-	RenderingDevice *rd = RenderingServer::get_singleton() ? RenderingServer::get_singleton()->get_rendering_device() : nullptr;
-	if (rd != nullptr) {
-		if (copy_pipeline.is_valid()) {
-			rd->free_rid(copy_pipeline);
-		}
-		for (const KeyValue<int64_t, RID> &kv : write_back_pipelines) {
-			rd->free_rid(kv.value);
-		}
-		for (RID r : { copy_shader, copy_sampler, write_back_shader, work }) {
-			if (r.is_valid()) {
-				rd->free_rid(r);
+	// Freed on the render thread, wherever the last reference goes.
+	godot_physx_run_on_render_thread([this]() {
+		RenderingDevice *rd = RenderingServer::get_singleton() ? RenderingServer::get_singleton()->get_rendering_device() : nullptr;
+		if (rd != nullptr) {
+			if (copy_pipeline.is_valid()) {
+				rd->free_rid(copy_pipeline);
 			}
+			for (const KeyValue<int64_t, RID> &kv : write_back_pipelines) {
+				rd->free_rid(kv.value);
+			}
+			for (RID r : { copy_shader, copy_sampler, write_back_shader, work }) {
+				if (r.is_valid()) {
+					rd->free_rid(r);
+				}
+			}
+			scatter.free(rd);
 		}
-		scatter.free(rd);
-	}
+	});
 }
 
 bool PhysXFlowRenderEffect::_ensure_copy_pipeline(RenderingDevice *p_rd) {

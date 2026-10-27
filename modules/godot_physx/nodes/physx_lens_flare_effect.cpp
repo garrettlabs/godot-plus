@@ -30,6 +30,7 @@
 
 #include "physx_lens_flare_effect.h"
 
+#include "../godot_physx_render_thread.h"
 #include "physx_compositor_effects.h"
 
 #include "core/object/callable_mp.h"
@@ -282,27 +283,30 @@ PhysXLensFlareEffect::PhysXLensFlareEffect() {
 }
 
 PhysXLensFlareEffect::~PhysXLensFlareEffect() {
-	RenderingDevice *rd = RenderingServer::get_singleton() ? RenderingServer::get_singleton()->get_rendering_device() : nullptr;
-	if (rd == nullptr) {
-		return;
-	}
-	_free_targets(rd);
-	for (const KeyValue<int64_t, RID> &kv : composite_pipelines) {
-		rd->free_rid(kv.value);
-	}
-	for (int i = 0; i < PASS_MAX; i++) {
-		if (pipelines[i].is_valid()) {
-			rd->free_rid(pipelines[i]);
+	// Freed on the render thread, wherever the last reference goes.
+	godot_physx_run_on_render_thread([this]() {
+		RenderingDevice *rd = RenderingServer::get_singleton() ? RenderingServer::get_singleton()->get_rendering_device() : nullptr;
+		if (rd == nullptr) {
+			return;
 		}
-		if (shaders[i].is_valid()) {
-			rd->free_rid(shaders[i]);
+		_free_targets(rd);
+		for (const KeyValue<int64_t, RID> &kv : composite_pipelines) {
+			rd->free_rid(kv.value);
 		}
-	}
-	for (RID r : { linear_sampler, border_sampler, ghost_buffer }) {
-		if (r.is_valid()) {
-			rd->free_rid(r);
+		for (int i = 0; i < PASS_MAX; i++) {
+			if (pipelines[i].is_valid()) {
+				rd->free_rid(pipelines[i]);
+			}
+			if (shaders[i].is_valid()) {
+				rd->free_rid(shaders[i]);
+			}
 		}
-	}
+		for (RID r : { linear_sampler, border_sampler, ghost_buffer }) {
+			if (r.is_valid()) {
+				rd->free_rid(r);
+			}
+		}
+	});
 }
 
 bool PhysXLensFlareEffect::_ensure(RenderingDevice *p_rd) {

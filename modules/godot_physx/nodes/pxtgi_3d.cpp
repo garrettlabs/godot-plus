@@ -30,6 +30,7 @@
 
 #include "pxtgi_3d.h"
 
+#include "../godot_physx_render_thread.h"
 #include "../godot_physx_server_3d.h"
 #include "../objects/godot_physx_body_3d.h"
 #include "../spaces/godot_physx_space_3d.h"
@@ -280,11 +281,13 @@ void PXTGI3D::_uninstall() {
 
 // At shutdown: the do-nothing shader (Godot's own GI step is back by then).
 void PXTGI3D::free_shared() {
-	RenderingDevice *rd = RenderingDevice::get_singleton();
-	if (hook_shader.is_valid() && rd) {
-		rd->free_rid(hook_shader);
-	}
-	hook_shader = RID();
+	godot_physx_run_on_render_thread([]() {
+		RenderingDevice *rd = RenderingDevice::get_singleton();
+		if (hook_shader.is_valid() && rd) {
+			rd->free_rid(hook_shader);
+		}
+		hook_shader = RID();
+	});
 }
 
 void PXTGI3D::_attach() {
