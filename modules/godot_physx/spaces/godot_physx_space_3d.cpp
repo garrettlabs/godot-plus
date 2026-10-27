@@ -41,6 +41,8 @@
 #include "godot_physx_direct_state_3d.h"
 
 #include "core/error/error_macros.h"
+#include "core/math/face3.h"
+#include "core/math/geometry_3d.h"
 #include "core/math/math_defs.h"
 #include "core/object/object.h"
 #include "core/os/mutex.h"
@@ -806,6 +808,86 @@ bool skip_one_sided_overlap(const PxRigidActor *p_actor, const PxShape *p_shape,
 	return (p_depth < 0.0f || p_depth > ONE_SIDED_DEEP_PENETRATION) && behind_one_sided_mesh(p_geom, p_pose, p_shape, p_actor->getGlobalPose() * p_shape->getLocalPose());
 }
 
+constexpr PxU32 ROUND_CONTACT_MAX_TRIANGLES = 64;
+
+enum RoundContact {
+	ROUND_CONTACT_NONE, // overlaps no triangle
+	ROUND_CONTACT_CORE_INSIDE, // the core crosses a triangle: no direction to push
+	ROUND_CONTACT_FOUND,
+};
+
+// Where a capsule or sphere (core segment p_a..p_b, a point for a sphere) that
+// overlaps a triangle mesh or height field really touches it: the deepest of
+// the triangles it overlaps, as the direction from the touch point to the core
+// and how far the round shape is in (<= 0: only touching). PhysX's own result
+// for a sweep that starts overlapping a mesh isn't that contact -- its depth is
+// the push along whichever axis it picked (32 cm back along the walk for a
+// 3.5 cm lip between two floor pieces) and its position can be a vertex a metre
+// away -- so a walking character was snapped sideways by tens of centimetres.
+RoundContact round_mesh_contact(const PxGeometry &p_geom, const PxTransform &p_pose, const PxVec3 &p_a, const PxVec3 &p_b, PxReal p_radius,
+		const PxShape *p_mesh_shape, const PxTransform &p_mesh_pose, PxVec3 &r_normal, PxReal &r_depth, PxVec3 &r_point) {
+	const PxGeometry &mesh = p_mesh_shape->getGeometry();
+	PxU32 tris[ROUND_CONTACT_MAX_TRIANGLES];
+	bool overflow = false;
+	PxU32 count = 0;
+	if (mesh.getType() == PxGeometryType::eTRIANGLEMESH) {
+		count = PxMeshQuery::findOverlapTriangleMesh(p_geom, p_pose, static_cast<const PxTriangleMeshGeometry &>(mesh), p_mesh_pose, tris, ROUND_CONTACT_MAX_TRIANGLES, 0, overflow);
+	} else {
+		count = PxMeshQuery::findOverlapHeightField(p_geom, p_pose, static_cast<const PxHeightFieldGeometry &>(mesh), p_mesh_pose, tris, ROUND_CONTACT_MAX_TRIANGLES, 0, overflow);
+	}
+	if (count == 0) {
+		return ROUND_CONTACT_NONE;
+	}
+	const Vector3 a = to_godot(p_a);
+	const Vector3 b = to_godot(p_b);
+	real_t best = Math::INF;
+	Vector3 best_core;
+	Vector3 best_tri;
+	for (PxU32 i = 0; i < count; i++) {
+		PxTriangle tri;
+		if (mesh.getType() == PxGeometryType::eTRIANGLEMESH) {
+			PxMeshQuery::getTriangle(static_cast<const PxTriangleMeshGeometry &>(mesh), p_mesh_pose, tris[i], tri);
+		} else {
+			PxMeshQuery::getTriangle(static_cast<const PxHeightFieldGeometry &>(mesh), p_mesh_pose, tris[i], tri);
+		}
+		const Face3 face(to_godot(tri.verts[0]), to_godot(tri.verts[1]), to_godot(tri.verts[2]));
+		if (a != b && Geometry3D::segment_intersects_triangle(a, b, face.vertex[0], face.vertex[1], face.vertex[2])) {
+			return ROUND_CONTACT_CORE_INSIDE;
+		}
+		// Closest pair: an end of the core against the face, or the core
+		// against one of the face's edges.
+		const Vector3 ends[2] = { a, b };
+		for (const Vector3 &end : ends) {
+			const Vector3 on_tri = face.get_closest_point_to(end);
+			const real_t d = end.distance_squared_to(on_tri);
+			if (d < best) {
+				best = d;
+				best_core = end;
+				best_tri = on_tri;
+			}
+		}
+		for (int e = 0; e < 3; e++) {
+			Vector3 on_core;
+			Vector3 on_edge;
+			Geometry3D::get_closest_points_between_segments(a, b, face.vertex[e], face.vertex[(e + 1) % 3], on_core, on_edge);
+			const real_t d = on_core.distance_squared_to(on_edge);
+			if (d < best) {
+				best = d;
+				best_core = on_core;
+				best_tri = on_edge;
+			}
+		}
+	}
+	const real_t dist = Math::sqrt(best);
+	if (dist < (real_t)1e-4) {
+		return ROUND_CONTACT_CORE_INSIDE;
+	}
+	r_normal = to_px((best_core - best_tri) / dist);
+	r_depth = p_radius - (PxReal)dist;
+	r_point = to_px(best_tri);
+	return ROUND_CONTACT_FOUND;
+}
+
 } //namespace
 
 bool GodotPhysXSpace3D::test_body_motion(GodotPhysXBody3D *p_body, const PhysicsServer3D::MotionParameters &p_params, PhysicsServer3D::MotionResult *r_result) {
@@ -934,11 +1016,16 @@ bool GodotPhysXSpace3D::test_body_motion(GodotPhysXBody3D *p_body, const Physics
 		// only the push-out, and following that sideways along a step's edge lifts
 		// the body over steps far too tall to walk up.
 		bool resweep = false;
+		PxSweepHit resting_hit;
+		bool resting = false;
 		for (int pass = 0; pass < 2; pass++) {
 			if (pass == 1) {
 				if (!resweep) {
 					break;
 				}
+				// The first sweep's floor, if it found nothing it was stopped by.
+				resting = has_hit && safe_fraction == (real_t)1.0;
+				resting_hit = best_hit;
 				safe_fraction = 1.0;
 				best_hit = PxSweepHit();
 				has_hit = false;
@@ -999,18 +1086,41 @@ bool GodotPhysXSpace3D::test_body_motion(GodotPhysXBody3D *p_body, const Physics
 						const PxVec3 centre = pose.p + unit_dir * PxMax(hit.block.distance, 0.0f);
 						PxVec3 a = centre;
 						PxVec3 ab(0.0f);
+						PxReal radius;
 						if (mover_type == PxGeometryType::eCAPSULE) {
 							// PhysX capsules lie along their local X axis.
-							const PxVec3 half = pose.q.getBasisVector0() * static_cast<const PxCapsuleGeometry &>(sg.geom.any()).halfHeight;
+							const PxCapsuleGeometry &capsule = static_cast<const PxCapsuleGeometry &>(sg.geom.any());
+							const PxVec3 half = pose.q.getBasisVector0() * capsule.halfHeight;
 							a = centre - half;
 							ab = half * 2.0f;
+							radius = capsule.radius;
+						} else {
+							radius = static_cast<const PxSphereGeometry &>(sg.geom.any()).radius;
 						}
-						const PxReal len2 = ab.magnitudeSquared();
-						const PxReal s = len2 > 1e-8f ? PxClamp((hit.block.position - a).dot(ab) / len2, 0.0f, 1.0f) : 0.0f;
-						const PxVec3 to_core = a + ab * s - hit.block.position;
-						const PxReal dist = to_core.magnitude();
-						if (dist > 1e-4f) {
-							hit.block.normal = to_core / dist;
+						if (hit.block.distance <= 0.0f) {
+							// Starts overlapping: take the contact from the triangles
+							// themselves (see round_mesh_contact).
+							PxVec3 normal;
+							PxReal depth;
+							PxVec3 point;
+							const RoundContact contact = round_mesh_contact(sg.geom.any(), pose, a, a + ab, radius, hit.block.shape,
+									hit.block.actor->getGlobalPose() * hit.block.shape->getLocalPose(), normal, depth, point);
+							if (contact == ROUND_CONTACT_NONE) {
+								continue;
+							}
+							if (contact == ROUND_CONTACT_FOUND) {
+								hit.block.normal = normal;
+								hit.block.distance = -PxMax(depth, 0.0f);
+								hit.block.position = point;
+							}
+						} else {
+							const PxReal len2 = ab.magnitudeSquared();
+							const PxReal s = len2 > 1e-8f ? PxClamp((hit.block.position - a).dot(ab) / len2, 0.0f, 1.0f) : 0.0f;
+							const PxVec3 to_core = a + ab * s - hit.block.position;
+							const PxReal dist = to_core.magnitude();
+							if (dist > 1e-4f) {
+								hit.block.normal = to_core / dist;
+							}
 						}
 					} else if (hit.block.actor && hit.block.shape && hit.block.faceIndex != 0xffffffffu &&
 							hit.block.shape->getGeometry().getType() == PxGeometryType::eTRIANGLEMESH) {
@@ -1039,30 +1149,36 @@ bool GodotPhysXSpace3D::test_body_motion(GodotPhysXBody3D *p_body, const Physics
 						}
 						mtd_recover += hit.block.normal * (pen + margin);
 						const bool round = mover_type == PxGeometryType::eCAPSULE || mover_type == PxGeometryType::eSPHERE;
-						// Only a push-out that pushes back against the way the body
-						// moves (sideways) needs the second sweep -- an edge or a step
-						// it walks into. Resting on a floor pushes straight up and is
-						// handled as before, with one sweep.
+						// A sweep that starts overlapping a mesh reports only that
+						// overlap, never what else of the mesh is ahead -- standing on
+						// a floor, the edge of a step walked into -- so a capsule or
+						// sphere sweeps again from where it's pushed out to. A push-out
+						// back against the way the body moves (an edge or a step it
+						// walks into) is left to that second sweep.
 						const PxReal push_back = -(hit.block.normal.x * unit_dir.x + hit.block.normal.z * unit_dir.z);
-						if (pass == 0 && round && push_back > 0.02f && (hit.block.shape->getGeometry().getType() == PxGeometryType::eTRIANGLEMESH || hit.block.shape->getGeometry().getType() == PxGeometryType::eHEIGHTFIELD)) {
+						if (pass == 0 && round && (hit.block.shape->getGeometry().getType() == PxGeometryType::eTRIANGLEMESH || hit.block.shape->getGeometry().getType() == PxGeometryType::eHEIGHTFIELD)) {
 							resweep = true;
-							continue;
+							if (push_back > 0.02f) {
+								continue;
+							}
 						}
 						// Only report a floor-like overlap so move_and_slide keeps a
 						// character grounded. Near-horizontal push-outs here are
 						// almost always a facet edge the capsule is grazing -- just
 						// depenetrate, don't treat it as a wall that stops the travel
 						// (that leaves a walking character frozen mid-slope).
-						if (hit.block.normal.y > 0.3f && (!has_hit || safe_fraction > (real_t)0.0)) {
+						// A capsule's or sphere's push-out is its true contact normal
+						// (above), never a facet edge, so one it's pressed into -- a
+						// wall, a step's edge, a lip -- stops the travel there and
+						// move_and_slide slides the rest along it: up a low lip's
+						// edge, not up a tall step's. Otherwise the body would sink
+						// into the step a little each frame and be pushed out over
+						// its top.
+						const bool pressed = round && (push_back > 0.02f || (hit.block.normal.y <= 0.3f && hit.block.normal.dot(-unit_dir) >= 0.001f));
+						if (!pressed && hit.block.normal.y > 0.3f && (!has_hit || safe_fraction > (real_t)0.0)) {
 							best_hit = hit.block;
 							has_hit = true;
-						} else if (round && hit.block.normal.dot(-unit_dir) >= 0.001f) {
-							// A capsule's or sphere's push-out is its true contact
-							// normal (above), never a facet edge: a near-horizontal one
-							// is a wall or a step's face it's pressed against. It
-							// stops the travel -- otherwise the body would sink into
-							// the step a little each frame and be pushed out over its
-							// top.
+						} else if (pressed) {
 							safe_fraction = 0.0;
 							best_hit = hit.block;
 							has_hit = true;
@@ -1083,6 +1199,10 @@ bool GodotPhysXSpace3D::test_body_motion(GodotPhysXBody3D *p_body, const Physics
 					}
 				}
 			}
+		}
+		if (!has_hit && resting) {
+			best_hit = resting_hit;
+			has_hit = true;
 		}
 	}
 
