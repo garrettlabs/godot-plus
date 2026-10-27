@@ -66,6 +66,11 @@ uint64_t PhysXFluidRenderEffect::ready_since = UINT64_MAX;
 namespace {
 
 Ref<PhysXFluidRenderEffect> shared_effect;
+// The last reference let go ON THE RENDER THREAD: the destructor frees
+// RenderingDevice resources, which only that thread may do.
+void release_shared_on_render_thread() {
+	shared_effect.unref();
+}
 
 enum Pass {
 	PASS_CLEAR,
@@ -750,6 +755,11 @@ void PhysXFluidRenderEffect::free_shared() {
 	textures_hooked = false;
 	proxies_shown = false;
 	ready_since = UINT64_MAX;
+	RenderingServer *rs = RenderingServer::get_singleton();
+	if (shared_effect.is_valid() && rs != nullptr) {
+		rs->call_on_render_thread(callable_mp_static(&release_shared_on_render_thread));
+		rs->sync();
+	}
 	shared_effect.unref();
 }
 

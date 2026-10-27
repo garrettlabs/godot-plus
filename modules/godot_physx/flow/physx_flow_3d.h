@@ -115,11 +115,21 @@ private:
 	bool cpu_readback = false;
 	static constexpr int READBACK_INTERVAL = 4;
 	uint64_t step_count = 0;
-	const uint8_t *last_smoke = nullptr;
-	uint64_t last_smoke_size = 0;
-	const uint8_t *last_temperature = nullptr;
-	uint64_t last_temperature_size = 0;
+	// Flow's GPU work -- making the grid, each step (simulate + flush +
+	// readbacks), destroying it -- runs on the RENDER thread
+	// (RenderingServer::call_on_render_thread: in single-threaded rendering
+	// that is this thread, at once). The main thread gathers emitters and
+	// queues each step's inputs; the render thread steps in order and leaves
+	// the newest readback here, copied. step_mutex guards the queue and all
+	// of these.
+	struct StepQueue;
+	StepQueue *steps = nullptr;
+	Mutex step_mutex;
+	Vector<uint8_t> last_smoke; // copies of the newest readback (NanoVDB)
+	Vector<uint8_t> last_temperature;
+	const uint8_t *last_smoke_source = nullptr; // the mapped readback they were copied from
 	AABB gas_bounds;
+	bool blocks_full = false; // seen on the render thread, warned about on this one
 
 	// Stats.
 	double stat_start_ms = 0.0;
@@ -184,7 +194,11 @@ private:
 	void _gather_light(Vector3 &r_direction, Color &r_color, Color &r_ambient);
 	void _fill_render_settings(FlowBackend::Settings &r_settings);
 	void _read_back();
-	float _sample_field(const uint8_t *p_field, uint64_t p_size, const Vector3 &p_position) const;
+	float _sample_field(const Vector<uint8_t> &p_field, const Vector3 &p_position) const;
+	void _post(const Callable &p_call);
+	void _rt_create(int p_max_blocks);
+	void _rt_destroy();
+	void _rt_step();
 
 protected:
 	void _notification(int p_what);

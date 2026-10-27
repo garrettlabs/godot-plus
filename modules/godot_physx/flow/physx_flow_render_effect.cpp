@@ -49,11 +49,17 @@
 #include "servers/rendering/storage/render_data.h"
 
 LocalVector<PhysXFlow3D *> PhysXFlowRenderEffect::flows;
+Mutex PhysXFlowRenderEffect::flows_mutex;
 HashMap<ObjectID, int> PhysXFlowRenderEffect::worlds;
 
 namespace {
 
 Ref<PhysXFlowRenderEffect> shared_effect;
+// The last reference let go ON THE RENDER THREAD: the destructor frees
+// RenderingDevice resources, which only that thread may do.
+void release_shared_on_render_thread() {
+	shared_effect.unref();
+}
 
 const char *COPY_SHADER = R"(
 #[compute]
@@ -118,12 +124,15 @@ void to_flow(const Projection &p_m, float r_out[16]) {
 } // namespace
 
 void PhysXFlowRenderEffect::register_flow(PhysXFlow3D *p_flow) {
+	MutexLock lock(flows_mutex);
 	if (flows.find(p_flow) < 0) {
 		flows.push_back(p_flow);
 	}
 }
 
 void PhysXFlowRenderEffect::unregister_flow(PhysXFlow3D *p_flow) {
+	// Waits for a frame drawing it: after this the render thread never touches it.
+	MutexLock lock(flows_mutex);
 	flows.erase(p_flow);
 }
 
@@ -167,6 +176,11 @@ Ref<PhysXFlowRenderEffect> PhysXFlowRenderEffect::get_shared() {
 }
 
 void PhysXFlowRenderEffect::free_shared() {
+	RenderingServer *rs = RenderingServer::get_singleton();
+	if (shared_effect.is_valid() && rs != nullptr) {
+		rs->call_on_render_thread(callable_mp_static(&release_shared_on_render_thread));
+		rs->sync();
+	}
 	shared_effect.unref();
 }
 
@@ -272,6 +286,7 @@ void PhysXFlowRenderEffect::_write_back(RenderingDevice *p_rd, const RID &p_src,
 }
 
 void PhysXFlowRenderEffect::_render(int p_callback_type, const RenderData *p_render_data) {
+	MutexLock lock(flows_mutex);
 	if (flows.is_empty() || p_render_data == nullptr) {
 		return;
 	}

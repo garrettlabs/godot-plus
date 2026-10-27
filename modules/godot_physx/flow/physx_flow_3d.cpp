@@ -36,6 +36,7 @@
 
 #include "core/config/engine.h"
 #include "core/config/project_settings.h"
+#include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
 #include "core/object/object_id.h"
 #include "core/os/os.h"
@@ -81,7 +82,73 @@ FlowBackend::Emitter make_solid(const Transform3D &p_xform, const Vector3 &p_vel
 
 } // namespace
 
+// One queued step: what the main thread gathered, for the render thread to
+// simulate with.
+struct PhysXFlow3D::StepQueue {
+	struct Step {
+		double time = 0.0;
+		float delta = 0.0f;
+		bool readback = false;
+		FlowBackend::Settings settings;
+		LocalVector<FlowBackend::Emitter> emitters;
+	};
+	LocalVector<Step> queue;
+};
+
 PhysXFlow3D::PhysXFlow3D() {
+	steps = memnew(StepQueue);
+}
+
+void PhysXFlow3D::_post(const Callable &p_call) {
+	// The RenderingDevice may only be driven from the render thread. With
+	// rendering on its own thread this queues the call in order with the
+	// frame's other rendering commands; single-threaded it runs right here.
+	RenderingServer::get_singleton()->call_on_render_thread(p_call);
+}
+
+void PhysXFlow3D::_rt_create(int p_max_blocks) {
+	const uint64_t t0 = OS::get_singleton()->get_ticks_usec();
+	FlowBackend::Grid *g = FlowBackend::grid_create_rd(rd, (uint32_t)p_max_blocks);
+	MutexLock lock(step_mutex);
+	grid = g;
+	stat_start_ms = (OS::get_singleton()->get_ticks_usec() - t0) / 1000.0;
+}
+
+void PhysXFlow3D::_rt_destroy() {
+	FlowBackend::Grid *g = nullptr;
+	{
+		MutexLock lock(step_mutex);
+		g = grid;
+		grid = nullptr;
+		steps->queue.clear();
+	}
+	if (g != nullptr) {
+		FlowBackend::grid_destroy(g);
+	}
+}
+
+void PhysXFlow3D::_rt_step() {
+	StepQueue::Step st;
+	{
+		MutexLock lock(step_mutex);
+		if (steps->queue.is_empty() || grid == nullptr) {
+			return;
+		}
+		st = steps->queue[0];
+		steps->queue.remove_at(0);
+	}
+	const uint64_t t0 = OS::get_singleton()->get_ticks_usec();
+	if (!FlowBackend::grid_step(grid, st.time, st.delta, st.settings, st.emitters.ptr(), (int)st.emitters.size())) {
+		return;
+	}
+	const bool full = FlowBackend::grid_active_blocks(grid) >= (uint32_t)max_blocks;
+	const double step_ms = (OS::get_singleton()->get_ticks_usec() - t0) / 1000.0;
+	MutexLock lock(step_mutex);
+	stat_step_ms = step_ms;
+	blocks_full = blocks_full || full;
+	if (st.readback) {
+		_read_back();
+	}
 }
 
 Color PhysXFlow3D::_default_heat_at(float p_t) {
@@ -103,6 +170,8 @@ PhysXFlow3D::~PhysXFlow3D() {
 		FlowBackend::release_library();
 		library_acquired = false;
 	}
+	memdelete(steps);
+	steps = nullptr;
 }
 
 void PhysXFlow3D::_start() {
@@ -125,10 +194,12 @@ void PhysXFlow3D::_start() {
 		update_configuration_warnings();
 		return;
 	}
-	const uint64_t t0 = OS::get_singleton()->get_ticks_usec();
-	grid = FlowBackend::grid_create_rd(rd, (uint32_t)max_blocks);
+	_post(callable_mp(this, &PhysXFlow3D::_rt_create).bind(max_blocks));
+	// Wait for it (one stall when a grid starts): everything below -- and the
+	// render effect -- wants the grid there.
+	RenderingServer::get_singleton()->sync();
 	max_blocks_warned = false;
-	stat_start_ms = (OS::get_singleton()->get_ticks_usec() - t0) / 1000.0;
+	blocks_full = false;
 	device_error = grid != nullptr ? String() : String("Flow couldn't create its grid");
 	update_configuration_warnings();
 	sim_time = 0.0;
@@ -152,14 +223,16 @@ void PhysXFlow3D::_stop() {
 		query_shape = RID();
 	}
 	if (grid != nullptr) {
-		FlowBackend::grid_destroy(grid);
-		grid = nullptr;
+		// After the steps already queued; waited for, so the grid (and this
+		// node, when it is being deleted) outlive every call that uses them.
+		_post(callable_mp(this, &PhysXFlow3D::_rt_destroy));
+		RenderingServer::get_singleton()->sync();
 	}
 	rd = nullptr;
-	last_smoke = nullptr;
-	last_smoke_size = 0;
-	last_temperature = nullptr;
-	last_temperature_size = 0;
+	MutexLock lock(step_mutex);
+	last_smoke.clear();
+	last_temperature.clear();
+	last_smoke_source = nullptr;
 	gas_bounds = AABB();
 }
 
@@ -567,8 +640,15 @@ void PhysXFlow3D::_step(double p_delta) {
 	// Solids near where the gas comes from -- and where it has spread to,
 	// when it's read back.
 	AABB region = emitters.is_empty() ? AABB() : emitter_bounds.grow(collision_range);
-	if (gas_bounds.has_volume()) {
-		region = region.has_volume() ? region.merge(gas_bounds.grow(1.0)) : gas_bounds.grow(1.0);
+	AABB gas;
+	bool full = false;
+	{
+		MutexLock lock(step_mutex);
+		gas = gas_bounds;
+		full = blocks_full;
+	}
+	if (gas.has_volume()) {
+		region = region.has_volume() ? region.merge(gas.grow(1.0)) : gas.grow(1.0);
 	}
 	_gather_colliders(region, emitters);
 	_gather_scatter_lights();
@@ -605,19 +685,21 @@ void PhysXFlow3D::_step(double p_delta) {
 	settings.gravity[1] = g.y;
 	settings.gravity[2] = g.z;
 
-	const uint64_t t0 = OS::get_singleton()->get_ticks_usec();
-	if (!FlowBackend::grid_step(grid, sim_time + p_delta, (float)p_delta, settings, emitters.ptr(), (int)emitters.size())) {
-		return;
+	{
+		MutexLock lock(step_mutex);
+		steps->queue.push_back(StepQueue::Step());
+		StepQueue::Step &q = steps->queue[steps->queue.size() - 1];
+		q.time = sim_time + p_delta;
+		q.delta = (float)p_delta;
+		q.readback = cpu_readback;
+		q.settings = settings;
+		q.emitters = emitters;
 	}
+	_post(callable_mp(this, &PhysXFlow3D::_rt_step));
 	sim_time += p_delta;
-	if (!max_blocks_warned && FlowBackend::grid_active_blocks(grid) >= (uint32_t)max_blocks) {
+	if (!max_blocks_warned && full) {
 		max_blocks_warned = true;
 		WARN_PRINT(vformat("PhysXFlow3D %s: the gas has used all %d max_blocks and is being cut off; raise max_blocks (more GPU memory) or make the effect smaller.", get_path(), max_blocks));
-	}
-	stat_step_ms = (OS::get_singleton()->get_ticks_usec() - t0) / 1000.0;
-
-	if (cpu_readback) {
-		_read_back();
 	}
 	if (get_world_3d().is_valid() && attached_world.is_valid()) {
 		PhysXFlowRenderEffect::install(get_world_3d().ptr(), get_viewport() ? get_viewport()->get_camera_3d() : nullptr);
@@ -637,11 +719,21 @@ void PhysXFlow3D::_read_back() {
 	if (!FlowBackend::grid_get_readback(grid, &temp, &temp_size, &smoke, &smoke_size)) {
 		return;
 	}
+	// (Render thread, step_mutex held.) Copied: the mapped readback is the
+	// GPU's to overwrite a few frames on, while the main thread samples it.
 	stat_readback_bytes = (int64_t)(temp_size + smoke_size);
-	last_smoke = smoke;
-	last_smoke_size = smoke_size;
-	last_temperature = temp;
-	last_temperature_size = temp_size;
+	if (smoke == last_smoke_source) {
+		return; // the same readback as last step -- the newer one isn't back yet
+	}
+	last_smoke_source = smoke;
+	last_smoke.resize(smoke != nullptr ? (int64_t)smoke_size : 0);
+	if (smoke != nullptr && smoke_size > 0) {
+		memcpy(last_smoke.ptrw(), smoke, smoke_size);
+	}
+	last_temperature.resize(temp != nullptr ? (int64_t)temp_size : 0);
+	if (temp != nullptr && temp_size > 0) {
+		memcpy(last_temperature.ptrw(), temp, temp_size);
+	}
 	float lo[3];
 	float hi[3];
 	if (FlowBackend::nanovdb_bounds(smoke, smoke_size, lo, hi)) {
@@ -665,32 +757,33 @@ void PhysXFlow3D::set_max_blocks(int p_v) {
 void PhysXFlow3D::set_cpu_readback(bool p_v) {
 	cpu_readback = p_v;
 	if (!cpu_readback) {
-		last_smoke = nullptr;
-		last_smoke_size = 0;
-		last_temperature = nullptr;
-		last_temperature_size = 0;
+		MutexLock lock(step_mutex);
+		last_smoke.clear();
+		last_temperature.clear();
+		last_smoke_source = nullptr;
 		gas_bounds = AABB();
 		stat_readback_bytes = 0;
 	}
 }
 
-float PhysXFlow3D::_sample_field(const uint8_t *p_field, uint64_t p_size, const Vector3 &p_position) const {
-	if (!cpu_readback || p_field == nullptr) {
+float PhysXFlow3D::_sample_field(const Vector<uint8_t> &p_field, const Vector3 &p_position) const {
+	MutexLock lock(step_mutex);
+	if (!cpu_readback || p_field.is_empty()) {
 		return -1.0f;
 	}
 	const float origin[3] = { (float)p_position.x - 0.5f * cell_size, (float)p_position.y - 0.5f * cell_size, (float)p_position.z - 0.5f * cell_size };
 	const int dims[3] = { 1, 1, 1 };
 	float value = 0.0f;
-	FlowBackend::sample_dense(p_field, p_size, origin, cell_size, dims, 0, 1, &value, 1);
+	FlowBackend::sample_dense(p_field.ptr(), (uint64_t)p_field.size(), origin, cell_size, dims, 0, 1, &value, 1);
 	return value;
 }
 
 float PhysXFlow3D::sample_smoke(const Vector3 &p_position) const {
-	return _sample_field(last_smoke, last_smoke_size, p_position);
+	return _sample_field(last_smoke, p_position);
 }
 
 float PhysXFlow3D::sample_temperature(const Vector3 &p_position) const {
-	return _sample_field(last_temperature, last_temperature_size, p_position);
+	return _sample_field(last_temperature, p_position);
 }
 
 Dictionary PhysXFlow3D::get_stats() const {
@@ -702,7 +795,10 @@ Dictionary PhysXFlow3D::get_stats() const {
 	d["render_calls"] = stat_render_calls;
 	d["render_outputs"] = stat_render_outputs;
 	d["readback_bytes"] = stat_readback_bytes;
-	d["bounds"] = gas_bounds;
+	{
+		MutexLock lock(step_mutex);
+		d["bounds"] = gas_bounds;
+	}
 	d["scatter_lights"] = stat_scatter_lights;
 	d["scatter_passes"] = stat_scatter_passes;
 	d["scatter_no_source"] = stat_scatter_no_source;

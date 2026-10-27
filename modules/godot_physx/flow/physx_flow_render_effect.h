@@ -32,6 +32,7 @@
 
 #include "flow_scatter_rd.h"
 
+#include "core/os/mutex.h"
 #include "core/templates/hash_map.h"
 #include "core/templates/local_vector.h"
 #include "scene/resources/compositor.h"
@@ -55,6 +56,8 @@ class PhysXFlowRenderEffect : public CompositorEffect {
 	GDCLASS(PhysXFlowRenderEffect, CompositorEffect);
 
 	static LocalVector<PhysXFlow3D *> flows;
+	// Registered on the main thread, drawn on the render thread: held while a frame draws them.
+	static Mutex flows_mutex;
 
 	static HashMap<ObjectID, int> worlds; // flows per world
 
