@@ -43,6 +43,14 @@ public:
 	// solver even when a CUDA device is available.
 	inline static bool enhanced_determinism = false;
 
+	// physics/physx_3d/simulation/gpu_dynamics
+	//
+	// When false, no CUDA context is made: rigid bodies and joints run on the
+	// CPU solver, as on a machine without CUDA. Worth it when the GPU is busy
+	// with other work (fetchResults waits on it every step) or the scene has
+	// few awake bodies. GPU-build only.
+	inline static bool gpu_dynamics = true;
+
 	// physics/physx_3d/simulation/solver_type
 	//
 	// 0 = PGS (Projected Gauss-Seidel, default) -- PhysX's classic solver.

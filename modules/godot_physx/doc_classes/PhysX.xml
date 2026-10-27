@@ -22,7 +22,7 @@
 		<method name="is_gpu_available" qualifiers="static">
 			<return type="bool" />
 			<description>
-				Returns [code]true[/code] when PhysX is the active physics engine and is running GPU dynamics on a CUDA device. It is [code]false[/code] in a build without GPU support, on a machine without a usable NVIDIA GPU or without [code]PhysXGpu[/code] shipped next to the executable, with [code]physics/physx_3d/simulation/enhanced_determinism[/code] on, or when another physics engine is selected. Without it, GPU-only features fall back or stay inert: [PhysXParticleFluid3D] with the PBD solver, GPU cloth and so on. Valid once the physics server has started (from any node's [code]_ready[/code] on).
+				Returns [code]true[/code] when PhysX is the active physics engine and is running GPU dynamics on a CUDA device. It is [code]false[/code] in a build without GPU support, on a machine without a usable NVIDIA GPU or without [code]PhysXGpu[/code] shipped next to the executable, with [code]physics/physx_3d/simulation/enhanced_determinism[/code] on or [code]physics/physx_3d/simulation/gpu_dynamics[/code] off, or when another physics engine is selected. Without it, GPU-only features fall back or stay inert: [PhysXParticleFluid3D] with the PBD solver, GPU cloth and so on. Valid once the physics server has started (from any node's [code]_ready[/code] on).
 			</description>
 		</method>
 	</methods>

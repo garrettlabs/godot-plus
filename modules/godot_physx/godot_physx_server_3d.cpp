@@ -1499,7 +1499,9 @@ void GodotPhysXServer3D::init() {
 	ERR_FAIL_NULL_MSG(px_physics, "PhysX: PxCreatePhysics failed.");
 
 #ifdef GODOT_PHYSX_GPU
-	if (!GodotPhysXProjectSettings::enhanced_determinism) {
+	if (!GodotPhysXProjectSettings::gpu_dynamics) {
+		print_verbose("PhysX: gpu_dynamics is off -> CPU simulation.");
+	} else if (!GodotPhysXProjectSettings::enhanced_determinism) {
 		PxCudaContextManagerDesc cuda_desc;
 		px_cuda = PxCreateCudaContextManager(*px_foundation, cuda_desc, PxGetProfilerCallback());
 		if (px_cuda && !px_cuda->contextIsValid()) {
