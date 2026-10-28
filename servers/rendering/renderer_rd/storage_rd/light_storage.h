@@ -155,7 +155,8 @@ private:
 		float specular_amount;
 		float shadow_opacity;
 
-		float pad[2];
+		uint32_t sscs_index; // layer in the screen-space contact shadow array, 0xffffffff for none
+		float pad;
 		float atlas_rect[4]; // in omni, used for atlas uv, in spot, used for projector uv
 		float shadow_matrix[16];
 		float shadow_bias;
@@ -518,6 +519,9 @@ public:
 	virtual void light_set_max_sdfgi_cascade(RID p_light, uint32_t p_cascade) override;
 	virtual void light_set_allow_contact_shadows(RID p_light, bool p_enable) override;
 	virtual bool light_get_allow_contact_shadows(RID p_light) const override;
+	// Picks the omni/spot lights (nearest first) that get a screen-space contact shadow layer this frame,
+	// into p_render_data->positional_contact_shadows; update_light_buffers() then writes their layer index.
+	void select_positional_contact_shadows(RenderDataRD *p_render_data, const PagedArray<RID> &p_lights, const Transform3D &p_camera_transform, uint32_t p_limit);
 
 	virtual void light_omni_set_shadow_mode(RID p_light, RSE::LightOmniShadowMode p_mode) override;
 
