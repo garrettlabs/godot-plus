@@ -137,7 +137,7 @@ public:
 		Color emissive_color[MAX_EMISSIVES];
 		bool multi_bounce = true; // off-screen hits light from the radiance cache
 		bool light_changed = false; // the light sources just changed: the radiance cache follows quickly
-		int reflection_mode = 2; // 0: Godot's own, 1: screen space, 2: screen space then the collision shapes
+		int reflection_mode = 2; // 0: Godot's own, 1: screen space, 2: screen space then the collision shapes, 3: and the probes
 		float reflection_cutoff = 0.5f; // rougher surfaces keep Godot's reflection (probes, sky)
 		// Reflection probes that override the GI buffers inside their box (Godot's scene shader replaces them there):
 		// world-to-local, the inner half extents where the override is whole, what they override (1 ambient, 2
@@ -169,6 +169,7 @@ private:
 	RID shaders[PASS_MAX];
 	RID pipelines[PASS_MAX];
 	RID linear_sampler;
+	RID mip_sampler;
 	RID nearest_sampler;
 	RID data_buffer; // the frame's matrices
 	RID primitive_buffer;

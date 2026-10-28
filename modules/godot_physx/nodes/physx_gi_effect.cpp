@@ -82,7 +82,7 @@ layout(set = 0, binding = 9, std140) uniform Frame {
 	vec4 spot_direction[8]; // w: cosine of the cone's half angle
 	vec4 spot_color[8]; // w: attenuation exponent
 	vec4 spot_cone[8]; // x: the cone edge's falloff exponent
-	vec4 reflect; // x: mode (0 Godot's own, 1 screen space, 2 and the shapes), y: roughness cutoff, z: emissives, w: the light sources just changed
+	vec4 reflect; // x: mode (0 Godot's own, 1 screen space, 2 and the shapes, 3 and the probes), y: roughness cutoff, z: emissives, w: the light sources just changed
 	vec4 emit_center[16];
 	vec4 emit_x[16]; // half axes
 	vec4 emit_y[16];
@@ -105,9 +105,10 @@ layout(set = 0, binding = 9, std140) uniform Frame {
 	vec4 sky_y;
 	vec4 sky_z;
 	vec4 sky_flat;
-	// Reflection probes whose capture can colour a reflection's off-screen hits (see probe_source): world-to-box
-	// rows, the box's half extents (w: the probe's layer in Godot's reflection atlas), the capture point in the box (w:
-	// the brightness the capture is scaled by) and in the world.
+	// Traced + probes: the reflection probes whose capture colours a reflection's off-screen hits (probe_source) and
+	// fills in the rest inside their box (probe_reflection): world-to-box rows, the box's half extents (w: the probe's
+	// layer in Godot's reflection atlas times two, plus one when it's box projected), the capture point in the box (w:
+	// the brightness the capture is scaled by) and in the world (w: the box's blend distance).
 	vec4 src_x[8];
 	vec4 src_y[8];
 	vec4 src_z[8];
@@ -115,7 +116,7 @@ layout(set = 0, binding = 9, std140) uniform Frame {
 	vec4 src_offset[8];
 	vec4 src_capture[8];
 	ivec4 srcs; // x: count
-	vec4 src_border; // x: the atlas maps' border, y: the scale inside it
+	vec4 src_border; // x: the atlas maps' border, y: the scale inside it, z: the roughest level
 }
 f;
 
@@ -1219,7 +1220,7 @@ bool probe_source(vec3 x, vec3 n, int hit, out vec3 seen) {
 		d /= abs(d.x) + abs(d.y) + abs(d.z);
 		vec2 uv = d.z >= 0.0 ? d.xy : sky_oct_wrap(d.xy);
 		uv = (uv * 0.5 + 0.5) * f.src_border.y + f.src_border.x;
-		seen = textureLod(probe_atlas, vec3(uv, f.src_box[i].w), 0.0).rgb * f.src_offset[i].w;
+		seen = textureLod(probe_atlas, vec3(uv, floor(f.src_box[i].w * 0.5)), 0.0).rgb * f.src_offset[i].w;
 		return true;
 	}
 	return false;
@@ -1302,7 +1303,7 @@ void main() {
 			break;
 		}
 	}
-	if (!found && int(f.reflect.x) == 2 && f.counts.x > 0) {
+	if (!found && int(f.reflect.x) >= 2 && f.counts.x > 0) {
 		vec3 world_origin = (f.view_to_world * vec4(origin, 1.0)).xyz;
 		vec3 world_dir = mat3(f.view_to_world) * dir;
 		float far = 60.0;
@@ -1446,6 +1447,49 @@ layout(rgba16f, set = 0, binding = 4) uniform restrict writeonly image2D ambient
 layout(rgba16f, set = 0, binding = 5) uniform restrict writeonly image2D reflection_buffer;
 layout(set = 0, binding = 7) uniform sampler2D reflect_tex;
 layout(set = 0, binding = 8) uniform sampler2D reflect_depth_tex;
+layout(set = 0, binding = 12) uniform sampler2DArray probe_atlas;
+
+// Traced + probes: the reflection a probe gives world point w along r at this roughness, as Godot's own probe
+// reflection would (the smallest box holding w, box projected if the probe is, the capture's level for the roughness),
+// and how much of it applies there (r_weight: 0 outside every box, fading to the edge over its blend distance).
+vec3 probe_reflection(vec3 w, vec3 r, float rough, out float r_weight) {
+	r_weight = 0.0;
+	int best = -1;
+	float best_volume = 1e30;
+	vec3 l = vec3(0.0);
+	for (int i = 0; i < f.srcs.x; i++) {
+		vec3 li = vec3(dot(f.src_x[i].xyz, w) + f.src_x[i].w, dot(f.src_y[i].xyz, w) + f.src_y[i].w, dot(f.src_z[i].xyz, w) + f.src_z[i].w);
+		vec3 e = f.src_box[i].xyz;
+		float volume = e.x * e.y * e.z;
+		if (all(lessThanEqual(abs(li), e)) && volume < best_volume) {
+			best = i;
+			best_volume = volume;
+			l = li;
+		}
+	}
+	if (best < 0) {
+		return vec3(0.0);
+	}
+	vec3 e = f.src_box[best].xyz;
+	r_weight = 1.0;
+	float blend = f.src_capture[best].w;
+	if (blend > 0.0) {
+		vec3 axis = min(vec3(blend), e);
+		vec3 b = clamp(1.0 - (abs(l) - e + axis) / axis, 0.0, 1.0);
+		r_weight = pow(b.x * b.y * b.z, 2.0);
+	}
+	vec3 d = normalize(vec3(dot(f.src_x[best].xyz, r), dot(f.src_y[best].xyz, r), dot(f.src_z[best].xyz, r)));
+	if (mod(f.src_box[best].w, 2.0) > 0.5) {
+		vec3 to_max = (e - l) / d;
+		vec3 to_min = (-e - l) / d;
+		vec3 far_side = mix(to_min, to_max, greaterThan(d, vec3(0.0)));
+		d = l + d * min(min(far_side.x, far_side.y), far_side.z) - f.src_offset[best].xyz;
+	}
+	d /= abs(d.x) + abs(d.y) + abs(d.z);
+	vec2 uv = d.z >= 0.0 ? d.xy : (1.0 - abs(d.yx)) * vec2(d.x >= 0.0 ? 1.0 : -1.0, d.y >= 0.0 ? 1.0 : -1.0);
+	uv = (uv * 0.5 + 0.5) * f.src_border.y + f.src_border.x;
+	return textureLod(probe_atlas, vec3(uv, floor(f.src_box[best].w * 0.5)), sqrt(rough) * f.src_border.z).rgb * f.src_offset[best].w;
+}
 
 void main() {
 	ivec2 px = ivec2(gl_GlobalInvocationID.xy);
@@ -1495,6 +1539,22 @@ void main() {
 			// switch between two different reflections.
 			float fade = smoothstep(0.0, 1.0, (f.reflect.y - rough) / max(0.25 * f.reflect.y, 1e-3));
 			reflection = vec4(r.a > 1e-3 ? r.rgb / r.a : vec3(0.0), r.a * fade);
+		}
+	}
+	// Traced + probes: inside a probe's box, what the rays leave (misses, the cutoff's fade, rougher surfaces) is the
+	// probe's reflection rather than Godot's sky, under the traced light. Not where a probe Godot draws replaces it all.
+	if (f.srcs.x > 0) {
+		vec3 w = (f.view_to_world * vec4(p, 1.0)).xyz;
+		if (!probe_overrides(w, 2)) {
+			vec3 nw = normalize(mat3(f.view_to_world) * n);
+			vec3 r = normalize(mix(reflect(normalize(w - f.view_to_world[3].xyz), nw), nw, rough * rough));
+			float weight;
+			vec3 from_probe = probe_reflection(w, r, rough, weight);
+			if (weight > 0.0) {
+				float a = reflection.a;
+				float alpha = a + (1.0 - a) * weight;
+				reflection = vec4((reflection.rgb * a + from_probe * (1.0 - a) * weight) / alpha, alpha);
+			}
 		}
 	}
 	imageStore(reflection_buffer, px, reflection);
@@ -1689,7 +1749,7 @@ PhysXGIEffect::~PhysXGIEffect() {
 				rd->free_rid(shaders[i]);
 			}
 		}
-		for (RID r : { linear_sampler, nearest_sampler, data_buffer, primitive_buffer, node_buffer, cache_keys, cache_cells, geometry_buffer }) {
+		for (RID r : { linear_sampler, mip_sampler, nearest_sampler, data_buffer, primitive_buffer, node_buffer, cache_keys, cache_cells, geometry_buffer }) {
 			if (r.is_valid()) {
 				rd->free_rid(r);
 			}
@@ -1728,6 +1788,9 @@ bool PhysXGIEffect::_ensure(RenderingDevice *p_rd) {
 	state.repeat_u = RD::SAMPLER_REPEAT_MODE_CLAMP_TO_EDGE;
 	state.repeat_v = RD::SAMPLER_REPEAT_MODE_CLAMP_TO_EDGE;
 	linear_sampler = p_rd->sampler_create(state);
+	state.mip_filter = RD::SAMPLER_FILTER_LINEAR; // a probe's capture, between its roughness levels
+	mip_sampler = p_rd->sampler_create(state);
+	state.mip_filter = RD::SAMPLER_FILTER_NEAREST;
 	state.mag_filter = RD::SAMPLER_FILTER_NEAREST;
 	state.min_filter = RD::SAMPLER_FILTER_NEAREST;
 	nearest_sampler = p_rd->sampler_create(state);
@@ -1946,16 +2009,18 @@ void PhysXGIEffect::_render(int p_callback_type, const RenderData *p_render_data
 	if (sky_map.is_null()) {
 		sky_map = RendererRD::TextureStorage::get_singleton()->texture_rd_get_default(RendererSceneRenderRD::get_singleton()->is_using_radiance_octmap_array() ? RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_2D_ARRAY_BLACK : RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_BLACK);
 	}
-	// The reflection probes Godot draws this frame (those whose box the view reaches) and have been captured: their
-	// captures, in Godot's reflection atlas, can colour the reflections' off-screen hits.
+	// Traced + probes: the reflection probes Godot draws this frame (those whose box the view reaches) and have been
+	// captured. Their captures, in Godot's reflection atlas, colour the reflections' off-screen hits, and inside their box
+	// fill in what the rays don't give (misses, the cutoff's fade, rougher surfaces) as Godot's own probe would.
 	RID probe_atlas;
-	{
+	if (s.reflection_mode == 3) {
 		const RenderDataRD *render_data = Object::cast_to<RenderDataRD>(p_render_data);
 		RendererRD::LightStorage *light_storage = RendererRD::LightStorage::get_singleton();
 		if (render_data && render_data->reflection_atlas.is_valid() && render_data->reflection_probes) {
 			const float border = light_storage->reflection_atlas_get_border_size(render_data->reflection_atlas);
 			data.src_border[0] = border;
 			data.src_border[1] = 1.0f - border * 2.0f;
+			data.src_border[2] = float(RendererSceneRenderRD::get_singleton()->get_roughness_layers() - 1);
 			int count = 0;
 			for (uint64_t i = 0; i < render_data->reflection_probes->size() && count < 8; i++) {
 				const RID instance = (*render_data->reflection_probes)[i];
@@ -1979,7 +2044,7 @@ void PhysXGIEffect::_render(int p_callback_type, const RenderData *p_render_data
 				data.src_box[count][0] = extents.x;
 				data.src_box[count][1] = extents.y;
 				data.src_box[count][2] = extents.z;
-				data.src_box[count][3] = float(layer);
+				data.src_box[count][3] = float(layer * 2 + (light_storage->reflection_probe_is_box_projection(probe) ? 1 : 0));
 				data.src_offset[count][0] = offset.x;
 				data.src_offset[count][1] = offset.y;
 				data.src_offset[count][2] = offset.z;
@@ -1988,6 +2053,7 @@ void PhysXGIEffect::_render(int p_callback_type, const RenderData *p_render_data
 				data.src_capture[count][0] = capture.x;
 				data.src_capture[count][1] = capture.y;
 				data.src_capture[count][2] = capture.z;
+				data.src_capture[count][3] = light_storage->reflection_probe_get_blend_distance(probe);
 				count++;
 			}
 			data.srcs[0] = count;
@@ -2144,7 +2210,7 @@ void PhysXGIEffect::_render(int p_callback_type, const RenderData *p_render_data
 	}
 
 	int32_t out[4] = { out_size.x, out_size.y, v.reflect_size.x, v.reflect_size.y };
-	_dispatch(rd, PASS_RESOLVE, { sampled(0, nearest_sampler, light_in), sampled(1, nearest_sampler, v.accum_depth[v.current]), sampled(2, nearest_sampler, depth), sampled(3, nearest_sampler, normal), sampled(6, linear_sampler, color), RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 4, ambient), RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 5, reflection), sampled(7, nearest_sampler, v.reflect_accum[v.current]), sampled(8, nearest_sampler, v.reflect_depth[v.current]) }, out_size, out, sizeof(out));
+	_dispatch(rd, PASS_RESOLVE, { sampled(0, nearest_sampler, light_in), sampled(1, nearest_sampler, v.accum_depth[v.current]), sampled(2, nearest_sampler, depth), sampled(3, nearest_sampler, normal), sampled(6, linear_sampler, color), RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 4, ambient), RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 5, reflection), sampled(7, nearest_sampler, v.reflect_accum[v.current]), sampled(8, nearest_sampler, v.reflect_depth[v.current]), sampled(12, mip_sampler, probe_atlas) }, out_size, out, sizeof(out));
 
 	rd->capture_timestamp("PXTGI end");
 	v.have_history = true;
