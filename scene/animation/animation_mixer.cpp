@@ -47,6 +47,7 @@
 #include "scene/3d/audio_stream_player_3d.h"
 #include "scene/3d/mesh_instance_3d.h"
 #include "scene/3d/node_3d.h"
+#include "core/profiling/profiling.h"
 #include "scene/3d/skeleton_3d.h"
 #endif // _3D_DISABLED
 
@@ -1024,6 +1025,7 @@ bool AnimationMixer::_update_caches() {
 /* -------------------------------------------- */
 
 void AnimationMixer::_process_animation(double p_delta, bool p_update_only) {
+	GodotProfileZone("AnimationMixer::_process_animation");
 	_blend_init();
 	if (cache_valid && _blend_pre_process(p_delta, track_count, track_map)) {
 		_blend_capture(p_delta);
