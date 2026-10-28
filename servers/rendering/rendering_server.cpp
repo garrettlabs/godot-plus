@@ -2875,6 +2875,7 @@ void RenderingServer::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("viewport_set_scaling_3d_mode", "viewport", "scaling_3d_mode"), &RenderingServer::viewport_set_scaling_3d_mode);
 	ClassDB::bind_method(D_METHOD("viewport_set_scaling_3d_scale", "viewport", "scale"), &RenderingServer::viewport_set_scaling_3d_scale);
+	ClassDB::bind_method(D_METHOD("viewport_set_frame_generation", "viewport", "frame_generation"), &RenderingServer::viewport_set_frame_generation);
 	ClassDB::bind_method(D_METHOD("viewport_set_fsr_sharpness", "viewport", "sharpness"), &RenderingServer::viewport_set_fsr_sharpness);
 	ClassDB::bind_method(D_METHOD("viewport_set_texture_mipmap_bias", "viewport", "mipmap_bias"), &RenderingServer::viewport_set_texture_mipmap_bias);
 	ClassDB::bind_method(D_METHOD("viewport_set_anisotropic_filtering_level", "viewport", "anisotropic_filtering_level"), &RenderingServer::viewport_set_anisotropic_filtering_level);
@@ -2934,6 +2935,7 @@ void RenderingServer::_bind_methods() {
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_SCALING_3D_MODE_METALFX_SPATIAL);
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_SCALING_3D_MODE_METALFX_TEMPORAL);
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_SCALING_3D_MODE_NEAREST);
+	BIND_ENUM_CONSTANT(RSE::VIEWPORT_SCALING_3D_MODE_DLSS);
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_SCALING_3D_MODE_MAX);
 
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_UPDATE_DISABLED);
@@ -3778,11 +3780,8 @@ void RenderingServer::init() {
 		String mode_hints;
 		String mode_hints_metal;
 		{
-			Vector<String> mode_hints_arr = { "Nearest (Fastest):5", "Bilinear (Fastest):0", "FSR 1.0 (Fast):1", "FSR 2.2 (Slow):2" };
+			Vector<String> mode_hints_arr = { "Bilinear (Fastest):0", "FSR 1.0 (Fast):1", "FSR 2.2 (Slow):2", "MetalFX (Spatial):3", "MetalFX (Temporal):4", "Nearest:5", "NVIDIA DLSS:6" };
 			mode_hints = String(",").join(mode_hints_arr);
-
-			mode_hints_arr.push_back("MetalFX (Spatial - Fast):3");
-			mode_hints_arr.push_back("MetalFX (Temporal - Slow):4");
 			mode_hints_metal = String(",").join(mode_hints_arr);
 		}
 
