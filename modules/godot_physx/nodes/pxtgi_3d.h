@@ -67,6 +67,7 @@ class PXTGI3D : public Node3D {
 		Color albedo;
 		Color emission;
 		bool mesh_proxy = false;
+		bool fixed = false; // a static body's shape (not animatable): a reflection probe's capture of it stays true
 		ObjectID shape_resource; // a collision shape's Shape3D when found: another one means finding the shapes again
 		// Hulls and meshes: their type (4, 5), where their geometry starts in the geometry buffer, their local bounds.
 		int geometry_type = 0;

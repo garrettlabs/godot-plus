@@ -44,6 +44,7 @@
 #include "scene/3d/camera_3d.h"
 #include "scene/3d/light_3d.h"
 #include "scene/3d/mesh_instance_3d.h"
+#include "scene/3d/physics/animatable_body_3d.h"
 #include "scene/3d/physics/area_3d.h"
 #include "scene/3d/physics/collision_object_3d.h"
 #include "scene/3d/physics/collision_shape_3d.h"
@@ -1012,6 +1013,7 @@ void PXTGI3D::_rescan() {
 			entry.mesh_proxy = true;
 		} else {
 			CollisionShape3D *cs = Object::cast_to<CollisionShape3D>(n);
+			entry.fixed = Object::cast_to<StaticBody3D>(cs->get_parent()) && !Object::cast_to<AnimatableBody3D>(cs->get_parent());
 			if (cs->get_shape().is_valid()) {
 				entry.shape_resource = cs->get_shape()->get_instance_id();
 				if (const GeometryBlock *block = _geometry_for(cs->get_shape())) {
@@ -1196,7 +1198,7 @@ void PXTGI3D::_pack_entry(int p_index, const Transform3D &p_to_world, float p_ty
 	p[20] = entry.emission.r;
 	p[21] = entry.emission.g;
 	p[22] = entry.emission.b;
-	p[23] = 0.0f;
+	p[23] = entry.fixed ? 1.0f : 0.0f;
 }
 
 // Shape p_index's GPU record and world bounds, from its node; false when it can't be traced.
