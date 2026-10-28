@@ -90,9 +90,15 @@ void RenderForwardClustered::RenderBufferDataForwardClustered::ensure_voxelgi() 
 	}
 }
 
-void RenderForwardClustered::RenderBufferDataForwardClustered::ensure_fsr2(RendererRD::FSR2Effect *p_effect) {
+void RenderForwardClustered::RenderBufferDataForwardClustered::ensure_fsr2(RendererRD::FSR2Effect *effect) {
 	if (fsr2_context == nullptr) {
-		fsr2_context = p_effect->create_context(render_buffers->get_internal_size(), render_buffers->get_target_size());
+		fsr2_context = effect->create_context(render_buffers->get_internal_size(), render_buffers->get_target_size());
+	}
+}
+
+void RenderForwardClustered::RenderBufferDataForwardClustered::ensure_dlss(RendererRD::DLSSEffect *effect) {
+	if (dlss_context == nullptr) {
+		dlss_context = effect->create_context(render_buffers->get_internal_size(), render_buffers->get_target_size());
 	}
 }
 
@@ -142,6 +148,11 @@ void RenderForwardClustered::RenderBufferDataForwardClustered::free_data() {
 		mfx_temporal_context = nullptr;
 	}
 #endif
+
+	if (dlss_context) {
+		memdelete(dlss_context);
+		dlss_context = nullptr;
+	}
 
 	if (!render_sdfgi_uniform_set.is_null() && RD::get_singleton()->uniform_set_is_valid(render_sdfgi_uniform_set)) {
 		RD::get_singleton()->free_rid(render_sdfgi_uniform_set);
@@ -1779,6 +1790,171 @@ void RenderForwardClustered::_process_sss(Ref<RenderSceneBuffersRD> p_render_buf
 	}
 }
 
+RenderForwardClustered::Scale3DMode RenderForwardClustered::_resolve_scale_3d_mode(Ref<RenderSceneBuffersRD> p_render_buffers) const {
+	switch (p_render_buffers->get_scaling_3d_mode()) {
+		case RSE::VIEWPORT_SCALING_3D_MODE_FSR2:
+			return SCALE_3D_FSR2;
+		case RSE::VIEWPORT_SCALING_3D_MODE_DLSS:
+			return SCALE_3D_DLSS;
+		case RSE::VIEWPORT_SCALING_3D_MODE_METALFX_TEMPORAL:
+#ifdef METAL_MFXTEMPORAL_ENABLED
+			return SCALE_3D_MFX;
+#else
+			return SCALE_3D_NONE;
+#endif
+		default:
+			return SCALE_3D_NONE;
+	}
+}
+
+void RenderForwardClustered::_render_3d_upscaling(const RenderDataRD *p_render_data, Scale3DMode p_scale_type, bool p_using_taa, double p_time_step, const DLSSRRGuideBuffers &p_dlss_rr) {
+	Ref<RenderSceneBuffersRD> rb = p_render_data->render_buffers;
+	ERR_FAIL_COND(rb.is_null());
+	Ref<RenderBufferDataForwardClustered> rb_data = rb->get_custom_data(RB_SCOPE_FORWARD_CLUSTERED);
+	ERR_FAIL_COND(rb_data.is_null());
+
+	if (p_scale_type == SCALE_3D_FSR2) {
+		rb_data->ensure_fsr2(fsr2_effect);
+
+		RID exposure;
+		if (RSG::camera_attributes->camera_attributes_uses_auto_exposure(p_render_data->camera_attributes)) {
+			exposure = luminance->get_current_luminance_buffer(rb);
+		}
+
+		RD::get_singleton()->draw_command_begin_label("FSR2");
+		RENDER_TIMESTAMP("FSR2");
+
+		for (uint32_t v = 0; v < rb->get_view_count(); v++) {
+			real_t fov = p_render_data->scene_data->cam_projection.get_fov();
+			real_t aspect = p_render_data->scene_data->cam_projection.get_aspect();
+			real_t fovy = p_render_data->scene_data->cam_projection.get_fovy(fov, 1.0 / aspect);
+			Vector2 jitter = p_render_data->scene_data->taa_jitter * Vector2(rb->get_internal_size()) * 0.5f;
+			RendererRD::FSR2Effect::Parameters params;
+			params.context = rb_data->get_fsr2_context();
+			params.internal_size = rb->get_internal_size();
+			params.sharpness = CLAMP(1.0f - (rb->get_fsr_sharpness() / 2.0f), 0.0f, 1.0f);
+			params.color = rb->get_internal_texture(v);
+			params.depth = rb->get_depth_texture(v);
+			params.velocity = rb->get_velocity_buffer(false, v);
+			params.reactive = rb->get_internal_texture_reactive(v);
+			params.exposure = exposure;
+			params.output = rb->get_upscaled_texture(v);
+			params.z_near = p_render_data->scene_data->z_near;
+			params.z_far = p_render_data->scene_data->z_far;
+			params.fovy = fovy;
+			params.jitter = jitter;
+			params.delta_time = float(p_time_step);
+			params.reset_accumulation = false; // FIXME: The engine does not provide a way to reset the accumulation.
+
+			Projection correction;
+			correction.set_depth_correction(true, true, false);
+
+			const Projection &prev_proj = p_render_data->scene_data->prev_cam_projection;
+			const Projection &cur_proj = p_render_data->scene_data->cam_projection;
+			const Transform3D &prev_transform = p_render_data->scene_data->prev_cam_transform;
+			const Transform3D &cur_transform = p_render_data->scene_data->cam_transform;
+			params.reprojection = (correction * prev_proj) * prev_transform.affine_inverse() * cur_transform * (correction * cur_proj).inverse();
+
+			rb->set_upscaler_ready(true);
+			fsr2_effect->upscale(params);
+		}
+
+		RD::get_singleton()->draw_command_end_label();
+	} else if (p_scale_type == SCALE_3D_DLSS) {
+		RENDER_TIMESTAMP("DLSS");
+		rb_data->ensure_dlss(dlss_effect);
+
+		RID exposure;
+		if (RSG::camera_attributes->camera_attributes_uses_auto_exposure(p_render_data->camera_attributes)) {
+			exposure = luminance->get_current_luminance_buffer(rb);
+		}
+
+		for (uint32_t v = 0; v < rb->get_view_count(); v++) {
+			real_t fov = p_render_data->scene_data->cam_projection.get_fov();
+			real_t aspect = p_render_data->scene_data->cam_projection.get_aspect();
+			real_t fovy = p_render_data->scene_data->cam_projection.get_fovy(fov, aspect);
+			Vector2 jitter = p_render_data->scene_data->taa_jitter * Vector2(rb->get_internal_size()) * 0.5f;
+			RendererRD::DLSSContext::Parameters params;
+			params.context = rb_data->get_dlss_context();
+			params.internal_size = rb->get_internal_size();
+			params.sharpness = CLAMP((rb->get_fsr_sharpness() / 2.0f), 0.0f, 1.0f);
+			params.color = rb->get_internal_texture(v);
+			params.depth = rb->get_depth_texture(v);
+			params.velocity = rb->get_velocity_buffer(false, v);
+			params.reactive = rb->get_internal_texture_reactive(v);
+			params.exposure = exposure;
+			params.output = rb->get_upscaled_texture(v);
+			params.dlss_g = rb->get_frame_generation();
+			params.preset = '?'; // FIXME: Unique preset per viewport? Does anyone need this?
+			params.z_near = p_render_data->scene_data->z_near;
+			params.z_far = p_render_data->scene_data->z_far;
+			params.fovy = fovy;
+			params.jitter = jitter;
+			params.delta_time = float(p_time_step);
+			params.reset_accumulation = false; // FIXME: The engine does not provide a way to reset the accumulation.
+
+			// DLSS Ray Reconstruction guide buffers are supplied by the raytraced path.
+			if (p_dlss_rr.active) {
+				params.dlss_rr = true;
+				params.dlss_rr_alpha_upscaling = false;
+				params.dlss_rr_diffuse_albedo = p_dlss_rr.diffuse_albedo;
+				params.dlss_rr_specular_albedo = p_dlss_rr.specular_albedo;
+				params.dlss_rr_normal_roughness = p_dlss_rr.normal_roughness;
+				params.dlss_rr_specular_hit_dist = p_dlss_rr.specular_hit_dist;
+			}
+
+			Projection correction;
+			correction.set_depth_correction(true, true, false);
+
+			const Projection &prev_proj = p_render_data->scene_data->prev_cam_projection;
+			const Projection &cur_proj = p_render_data->scene_data->cam_projection;
+			const Transform3D &prev_transform = p_render_data->scene_data->prev_cam_transform;
+			const Transform3D &cur_transform = p_render_data->scene_data->cam_transform;
+			params.reprojection = (correction * prev_proj) * prev_transform.affine_inverse() * cur_transform * (correction * cur_proj).inverse();
+			params.cam_projection = cur_proj;
+			params.cam_transform = cur_transform;
+
+			rb->set_upscaler_ready(dlss_effect->is_ready(rb_data->get_dlss_context()));
+			dlss_effect->upscale(params);
+		}
+	} else if (p_scale_type == SCALE_3D_MFX) {
+#ifdef METAL_MFXTEMPORAL_ENABLED
+		bool reset = rb_data->ensure_mfx_temporal(mfx_temporal_effect);
+
+		RID exposure;
+		if (RSG::camera_attributes->camera_attributes_uses_auto_exposure(p_render_data->camera_attributes)) {
+			exposure = luminance->get_current_luminance_buffer(rb);
+		}
+
+		RD::get_singleton()->draw_command_begin_label("MetalFX Temporal");
+		// Scale to ±0.5.
+		Vector2 jitter = p_render_data->scene_data->taa_jitter * 0.5f;
+		jitter *= Vector2(1.0, -1.0); // Flip y-axis as bottom left is origin.
+
+		for (uint32_t v = 0; v < rb->get_view_count(); v++) {
+			RendererRD::MFXTemporalEffect::Params params;
+			params.src = rb->get_internal_texture(v);
+			params.depth = rb->get_depth_texture(v);
+			params.motion = rb->get_velocity_buffer(false, v);
+			params.exposure = exposure;
+			params.dst = rb->get_upscaled_texture(v);
+			params.jitter_offset = jitter;
+			params.reset = reset;
+
+			rb->set_upscaler_ready(true);
+			mfx_temporal_effect->process(rb_data->get_mfx_temporal_context(), params);
+		}
+
+		RD::get_singleton()->draw_command_end_label();
+#endif
+	} else if (p_using_taa) {
+		RD::get_singleton()->draw_command_begin_label("TAA");
+		RENDER_TIMESTAMP("TAA");
+		taa->process(rb, rb->get_base_data_format(), p_render_data->scene_data->z_near, p_render_data->scene_data->z_far);
+		RD::get_singleton()->draw_command_end_label();
+	}
+}
+
 void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Color &p_default_bg_color) {
 	scene_state.used_uniform_buffer_count = 0;
 
@@ -1859,28 +2035,9 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	bool using_debug_mvs = get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_MOTION_VECTORS;
 	bool using_taa = rb->get_use_taa();
 
-	enum {
-		SCALE_NONE,
-		SCALE_FSR2,
-		SCALE_MFX,
-	} scale_type = SCALE_NONE;
+	Scale3DMode scale_type = _resolve_scale_3d_mode(rb);
 
-	switch (rb->get_scaling_3d_mode()) {
-		case RSE::VIEWPORT_SCALING_3D_MODE_FSR2:
-			scale_type = SCALE_FSR2;
-			break;
-		case RSE::VIEWPORT_SCALING_3D_MODE_METALFX_TEMPORAL:
-#ifdef METAL_MFXTEMPORAL_ENABLED
-			scale_type = SCALE_MFX;
-#else
-			scale_type = SCALE_NONE;
-#endif
-			break;
-		default:
-			break;
-	}
-
-	bool using_upscaling = scale_type != SCALE_NONE;
+	bool using_upscaling = scale_type != SCALE_3D_NONE;
 
 	// check if we need motion vectors
 	bool motion_vectors_required;
@@ -2319,7 +2476,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		RD::get_singleton()->draw_command_end_label();
 
 		if (using_motion_pass) {
-			if (scale_type == SCALE_MFX) {
+			if (scale_type == SCALE_3D_MFX) {
 				motion_vectors_store->process(rb,
 						p_render_data->scene_data->cam_projection, p_render_data->scene_data->cam_transform,
 						p_render_data->scene_data->prev_cam_projection, p_render_data->scene_data->prev_cam_transform);
@@ -2563,87 +2720,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	}
 
 	if (rb_data.is_valid() && (using_upscaling || using_taa)) {
-		if (scale_type == SCALE_FSR2) {
-			rb_data->ensure_fsr2(fsr2_effect);
-
-			RID exposure;
-			if (RSG::camera_attributes->camera_attributes_uses_auto_exposure(p_render_data->camera_attributes)) {
-				exposure = luminance->get_current_luminance_buffer(rb);
-			}
-
-			RD::get_singleton()->draw_command_begin_label("FSR2");
-			RENDER_TIMESTAMP("FSR2");
-
-			for (uint32_t v = 0; v < rb->get_view_count(); v++) {
-				real_t fov = p_render_data->scene_data->cam_projection.get_fov();
-				real_t aspect = p_render_data->scene_data->cam_projection.get_aspect();
-				real_t fovy = p_render_data->scene_data->cam_projection.get_fovy(fov, 1.0 / aspect);
-				Vector2 jitter = p_render_data->scene_data->taa_jitter * Vector2(rb->get_internal_size()) * 0.5f;
-				RendererRD::FSR2Effect::Parameters params;
-				params.context = rb_data->get_fsr2_context();
-				params.internal_size = rb->get_internal_size();
-				params.sharpness = CLAMP(1.0f - (rb->get_fsr_sharpness() / 2.0f), 0.0f, 1.0f);
-				params.color = rb->get_internal_texture(v);
-				params.depth = rb->get_depth_texture(v);
-				params.velocity = rb->get_velocity_buffer(false, v);
-				params.reactive = rb->get_internal_texture_reactive(v);
-				params.exposure = exposure;
-				params.output = rb->get_upscaled_texture(v);
-				params.z_near = p_render_data->scene_data->z_near;
-				params.z_far = p_render_data->scene_data->z_far;
-				params.fovy = fovy;
-				params.jitter = jitter;
-				params.delta_time = float(time_step);
-				params.reset_accumulation = false; // FIXME: The engine does not provide a way to reset the accumulation.
-
-				Projection correction;
-				correction.set_depth_correction(true, true, false);
-
-				const Projection &prev_proj = p_render_data->scene_data->prev_cam_projection;
-				const Projection &cur_proj = p_render_data->scene_data->cam_projection;
-				const Transform3D &prev_transform = p_render_data->scene_data->prev_cam_transform;
-				const Transform3D &cur_transform = p_render_data->scene_data->cam_transform;
-				params.reprojection = (correction * prev_proj) * prev_transform.affine_inverse() * cur_transform * (correction * cur_proj).inverse();
-
-				fsr2_effect->upscale(params);
-			}
-
-			RD::get_singleton()->draw_command_end_label();
-		} else if (scale_type == SCALE_MFX) {
-#ifdef METAL_MFXTEMPORAL_ENABLED
-			bool reset = rb_data->ensure_mfx_temporal(mfx_temporal_effect);
-
-			RID exposure;
-			if (RSG::camera_attributes->camera_attributes_uses_auto_exposure(p_render_data->camera_attributes)) {
-				exposure = luminance->get_current_luminance_buffer(rb);
-			}
-
-			RD::get_singleton()->draw_command_begin_label("MetalFX Temporal");
-			// Scale to ±0.5.
-			Vector2 jitter = p_render_data->scene_data->taa_jitter * 0.5f;
-			jitter *= Vector2(1.0, -1.0); // Flip y-axis as bottom left is origin.
-
-			for (uint32_t v = 0; v < rb->get_view_count(); v++) {
-				RendererRD::MFXTemporalEffect::Params params;
-				params.src = rb->get_internal_texture(v);
-				params.depth = rb->get_depth_texture(v);
-				params.motion = rb->get_velocity_buffer(false, v);
-				params.exposure = exposure;
-				params.dst = rb->get_upscaled_texture(v);
-				params.jitter_offset = jitter;
-				params.reset = reset;
-
-				mfx_temporal_effect->process(rb_data->get_mfx_temporal_context(), params);
-			}
-
-			RD::get_singleton()->draw_command_end_label();
-#endif
-		} else if (using_taa) {
-			RD::get_singleton()->draw_command_begin_label("TAA");
-			RENDER_TIMESTAMP("TAA");
-			taa->process(rb, rb->get_base_data_format(), p_render_data->scene_data->z_near, p_render_data->scene_data->z_far);
-			RD::get_singleton()->draw_command_end_label();
-		}
+		_render_3d_upscaling(p_render_data, scale_type, using_taa, time_step, DLSSRRGuideBuffers());
 	}
 
 	if (rb_data.is_valid()) {
@@ -5390,9 +5467,10 @@ RenderForwardClustered::RenderForwardClustered() {
 
 	taa = memnew(RendererRD::TAA);
 	fsr2_effect = memnew(RendererRD::FSR2Effect);
+	dlss_effect = memnew(RendererRD::DLSSEffect);
 	ss_effects = memnew(RendererRD::SSEffects);
-#ifdef METAL_MFXTEMPORAL_ENABLED
 	motion_vectors_store = memnew(RendererRD::MotionVectorsStore);
+#ifdef METAL_MFXTEMPORAL_ENABLED
 	mfx_temporal_effect = memnew(RendererRD::MFXTemporalEffect);
 #endif
 }
@@ -5413,17 +5491,23 @@ RenderForwardClustered::~RenderForwardClustered() {
 		fsr2_effect = nullptr;
 	}
 
+	if (motion_vectors_store) {
+		memdelete(motion_vectors_store);
+		motion_vectors_store = nullptr;
+	}
+
 #ifdef METAL_MFXTEMPORAL_ENABLED
 	if (mfx_temporal_effect) {
 		memdelete(mfx_temporal_effect);
 		mfx_temporal_effect = nullptr;
 	}
 
-	if (motion_vectors_store) {
-		memdelete(motion_vectors_store);
-		motion_vectors_store = nullptr;
-	}
 #endif
+
+	if (dlss_effect) {
+		memdelete(dlss_effect);
+		dlss_effect = nullptr;
+	}
 
 	RD::get_singleton()->free_rid(shadow_sampler);
 	RSG::light_storage->directional_shadow_atlas_set_size(0);
