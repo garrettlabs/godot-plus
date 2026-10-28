@@ -726,6 +726,37 @@ void LightStorage::set_max_lights(const uint32_t p_max_lights) {
 	directional_light_buffer = RD::get_singleton()->uniform_buffer_create(directional_light_buffer_size);
 }
 
+void LightStorage::select_positional_contact_shadows(RenderDataRD *p_render_data, const PagedArray<RID> &p_lights, const Transform3D &p_camera_transform, uint32_t p_limit) {
+	ERR_FAIL_NULL(p_render_data);
+	p_render_data->positional_contact_shadows.clear();
+	if (p_limit == 0) {
+		return;
+	}
+
+	// Each light costs a full-screen pass, so keep the nearest p_limit of those that allow it.
+	struct Candidate {
+		float distance_sq;
+		RID instance;
+		bool operator<(const Candidate &p_other) const { return distance_sq < p_other.distance_sq; }
+	};
+	LocalVector<Candidate> candidates;
+	for (int i = 0; i < (int)p_lights.size(); i++) {
+		LightInstance *light_instance = light_instance_owner.get_or_null(p_lights[i]);
+		if (!light_instance) {
+			continue;
+		}
+		Light *light = light_owner.get_or_null(light_instance->light);
+		if (!light || !light->allow_contact_shadows || (light->type != RSE::LIGHT_OMNI && light->type != RSE::LIGHT_SPOT)) {
+			continue;
+		}
+		candidates.push_back({ (float)light_instance->transform.origin.distance_squared_to(p_camera_transform.origin), p_lights[i] });
+	}
+	candidates.sort();
+	for (uint32_t i = 0; i < candidates.size() && i < p_limit; i++) {
+		p_render_data->positional_contact_shadows.push_back(candidates[i].instance);
+	}
+}
+
 void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const PagedArray<RID> &p_lights, const Transform3D &p_camera_transform, RID p_shadow_atlas, bool p_using_shadows, uint32_t &r_directional_light_count, uint32_t &r_positional_light_count, bool &r_directional_light_soft_shadows) {
 	ForwardIDStorage *forward_id_storage = ForwardIDStorage::get_singleton();
 	RendererRD::TextureStorage *texture_storage = RendererRD::TextureStorage::get_singleton();
@@ -978,6 +1009,15 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 		sorter.sort(area_light_sort, area_light_count);
 	}
 
+	// Screen-space contact shadow layers chosen by select_positional_contact_shadows(); their layers
+	// follow the directional ones, whose count is final once the loop above has run.
+	HashMap<RID, uint32_t> positional_contact_shadow_rank;
+	if (p_render_data) {
+		for (uint32_t i = 0; i < p_render_data->positional_contact_shadows.size(); i++) {
+			positional_contact_shadow_rank[p_render_data->positional_contact_shadows[i]] = i;
+		}
+	}
+
 	bool using_forward_ids = forward_id_storage->uses_forward_ids();
 
 	for (uint32_t i = 0; i < (omni_light_count + spot_light_count + area_light_count); i++) {
@@ -1083,6 +1123,12 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 		light_data.position[0] = pos.x;
 		light_data.position[1] = pos.y;
 		light_data.position[2] = pos.z;
+
+		if (positional_contact_shadow_rank.has(light_instance->self)) {
+			light_data.sscs_index = directional_contact_shadows_count + positional_contact_shadow_rank[light_instance->self];
+		} else {
+			light_data.sscs_index = 0xffffffff;
+		}
 
 		Vector3 direction = inverse_transform.basis.xform(light_transform.basis.xform(Vector3(0, 0, -1))).normalized();
 

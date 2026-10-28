@@ -91,6 +91,7 @@ public:
 	LocalVector<int> shadows;
 	LocalVector<int> directional_shadows;
 	LocalVector<int> contact_shadows;
+	LocalVector<RID> positional_contact_shadows; // Omni/spot light instances given a contact shadow layer this frame, in layer order after the directional ones.
 
 	/* GI info */
 	const RendererSceneRender::RenderSDFGIData *render_sdfgi_regions = nullptr;

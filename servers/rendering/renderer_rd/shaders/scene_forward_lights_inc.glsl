@@ -729,6 +729,18 @@ void light_process_omni(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 	}
 
 	vec3 light_rel_vec_norm = light_rel_vec / light_length;
+#ifdef SCREEN_SPACE_EFFECTS_FLAGS_USE_SSCS
+	// Screen-space contact shadow, when this light was given a layer this frame.
+	if (bool(implementation_data.ss_effects_flags & SCREEN_SPACE_EFFECTS_FLAGS_USE_SSCS) && omni_lights.data[idx].sscs_index != 0xFFFFFFFFu) {
+#ifdef USE_MULTIVIEW
+		float sscs_layer = float(omni_lights.data[idx].sscs_index * 2u + uint(ViewIndex));
+#else
+		float sscs_layer = float(omni_lights.data[idx].sscs_index);
+#endif
+		shadow = min(shadow, half(textureLod(sampler2DArray(sscs_buffer, SAMPLER_LINEAR_CLAMP), vec3(screen_uv, sscs_layer), 0.0).r));
+	}
+#endif
+
 	light_compute(normal, hvec3(light_rel_vec_norm), eye_vec, size, hvec3(color), false, omni_attenuation * shadow, f0, roughness, metallic, half(omni_lights.data[idx].specular_amount), albedo, alpha, screen_uv, energy_compensation,
 #ifdef LIGHT_BACKLIGHT_USED
 			backlight,
@@ -930,6 +942,18 @@ void light_process_spot(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 			color *= proj.rgb * proj.a;
 		}
 	}
+
+#ifdef SCREEN_SPACE_EFFECTS_FLAGS_USE_SSCS
+	// Screen-space contact shadow, when this light was given a layer this frame.
+	if (bool(implementation_data.ss_effects_flags & SCREEN_SPACE_EFFECTS_FLAGS_USE_SSCS) && spot_lights.data[idx].sscs_index != 0xFFFFFFFFu) {
+#ifdef USE_MULTIVIEW
+		float sscs_layer = float(spot_lights.data[idx].sscs_index * 2u + uint(ViewIndex));
+#else
+		float sscs_layer = float(spot_lights.data[idx].sscs_index);
+#endif
+		shadow = min(shadow, half(textureLod(sampler2DArray(sscs_buffer, SAMPLER_LINEAR_CLAMP), vec3(screen_uv, sscs_layer), 0.0).r));
+	}
+#endif
 
 	light_compute(normal, hvec3(light_rel_vec_norm), eye_vec, size, hvec3(color), false, spot_attenuation * shadow, f0, roughness, metallic, half(spot_lights.data[idx].specular_amount), albedo, alpha, screen_uv, energy_compensation,
 #ifdef LIGHT_BACKLIGHT_USED
