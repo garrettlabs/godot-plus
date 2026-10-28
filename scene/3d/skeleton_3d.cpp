@@ -35,6 +35,7 @@
 #include "core/object/class_db.h"
 #include "scene/3d/skeleton_modifier_3d.h"
 #if !defined(DISABLE_DEPRECATED) && !defined(PHYSICS_3D_DISABLED)
+#include "core/profiling/profiling.h"
 #include "scene/3d/physics/physical_bone_simulator_3d.h"
 #endif // _DISABLE_DEPRECATED && PHYSICS_3D_DISABLED
 #include "servers/rendering/rendering_server.h"
@@ -1118,6 +1119,7 @@ void Skeleton3D::force_update_deferred() {
 }
 
 void Skeleton3D::force_update_all_dirty_bones() {
+	GodotProfileZone("Skeleton3D::force_update_all_dirty_bones");
 	_force_update_all_dirty_bones();
 }
 

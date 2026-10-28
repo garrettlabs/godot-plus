@@ -824,6 +824,7 @@ void SceneTree::process_timers(double p_delta, bool p_physics_frame) {
 }
 
 void SceneTree::process_tweens(double p_delta, bool p_physics) {
+	GodotProfileZone("SceneTree::process_tweens");
 	_THREAD_SAFE_METHOD_
 	// This methods works similarly to how SceneTreeTimers are handled.
 	const List<Ref<Tween>>::Element *L = tweens.back();
@@ -1191,6 +1192,7 @@ bool SceneTree::is_suspended() const {
 }
 
 void SceneTree::_process_group(ProcessGroup *p_group, bool p_physics) {
+	GodotProfileZone("SceneTree::_process_group");
 	// When reading this function, keep in mind that this code must work in a way where
 	// if any node is removed, this needs to continue working.
 
