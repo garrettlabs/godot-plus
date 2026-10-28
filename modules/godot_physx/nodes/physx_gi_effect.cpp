@@ -609,6 +609,41 @@ int cache_slot(vec3 x, vec3 n, bool claim, out bool claimed) {
 	return -1;
 }
 
+// The bounce light arriving at x (facing n), blended from the eight refined cells around it as a texture is filtered:
+// one cell's own value shows as a square patch where a reflection looks at it. Black when none is refined yet.
+vec3 smooth_incoming(vec3 x, vec3 n) {
+	float dist = length(x - f.view_to_world[3].xyz);
+	uint level = uint(clamp(floor(log2(max(dist, 1.0) / 8.0)) + 1.0, 0.0, 5.0));
+	vec3 c = x / (0.25 * float(1u << level)) - 0.5;
+	ivec3 base = ivec3(floor(c));
+	vec3 t = c - vec3(base);
+	vec3 a = abs(n);
+	uint facing = a.x > a.y && a.x > a.z ? (n.x > 0.0 ? 0u : 1u) : (a.y > a.z ? (n.y > 0.0 ? 2u : 3u) : (n.z > 0.0 ? 4u : 5u));
+	vec4 sum = vec4(0.0);
+	for (int i = 0; i < 8; i++) {
+		ivec3 o = ivec3(i & 1, (i >> 1) & 1, i >> 2);
+		ivec3 cell = base + o;
+		uint h = hash_u(uint(cell.x) + hash_u(uint(cell.y) + hash_u(uint(cell.z) + hash_u(facing * 8u + level))));
+		uint key = hash_u(h ^ 0x9e3779b9u) | 1u;
+		for (uint j = 0u; j < 8u; j++) {
+			uint slot = (h + j) & f.cache.y;
+			uint was = cache_keys.k[slot];
+			if (was == key) {
+				if (cells.c[slot].normal.w > 0.5) {
+					vec3 w3 = mix(1.0 - t, t, vec3(o));
+					float w = w3.x * w3.y * w3.z;
+					sum += vec4(cells.c[slot].incoming.rgb * w, w);
+				}
+				break;
+			}
+			if (was == 0u) {
+				break;
+			}
+		}
+	}
+	return sum.w > 1e-4 ? sum.rgb / sum.w : vec3(0.0);
+}
+
 #ifdef SKY_OCTMAP_ARRAY
 layout(set = 0, binding = 11) uniform sampler2DArray sky_tex;
 #else
@@ -718,8 +753,10 @@ vec3 direct_light(vec3 x, vec3 n) {
 
 // The light leaving a shape's surface toward the ray: last frame's image where that point was on it; otherwise what it
 // emits, plus its radiance cache cell (bounce light included) once that has been refined, or else the direct light on
-// its albedo. A pixel's ray (from_pixels) claims the cell for the cache and keeps it alive.
-vec3 world_light(vec3 x, vec3 n, int hit, sampler2D depth_tex, sampler2D color_tex, bool from_pixels, bool with_glow) {
+// its albedo. A pixel's ray (from_pixels) claims the cell for the cache and keeps it alive. A sharp one (a reflection,
+// which shows the point itself) lights it directly and takes only the cell's bounce light: a cell is a quarter metre
+// or more across, too coarse to show as it is.
+vec3 world_light(vec3 x, vec3 n, int hit, sampler2D depth_tex, sampler2D color_tex, bool from_pixels, bool with_glow, bool sharp) {
 	vec3 v = (f.world_to_view * vec4(x, 1.0)).xyz;
 	if (v.z < -f.clip.x) {
 		vec2 sp = pixel_from_view(v, f.proj_info);
@@ -752,7 +789,7 @@ vec3 world_light(vec3 x, vec3 n, int hit, sampler2D depth_tex, sampler2D color_t
 					cells.c[slot].pos.w = uintBitsToFloat(f.cache.x);
 				}
 				if (cells.c[slot].normal.w > 0.5) {
-					return glow + cells.c[slot].outgoing.rgb;
+					return glow + (sharp ? albedo * (direct_light(x, n) + smooth_incoming(x, n)) : cells.c[slot].outgoing.rgb);
 				}
 			}
 		}
@@ -943,7 +980,7 @@ void main() {
 			vec3 wn;
 			int hit = trace_world(world_origin, world_dir, t, wn);
 			if (hit >= 0) {
-				light += clamp_firefly(world_light(world_origin + world_dir * t, wn, hit, depth_tex, color_tex, true, emissives == 0));
+				light += clamp_firefly(world_light(world_origin + world_dir * t, wn, hit, depth_tex, color_tex, true, emissives == 0, false));
 				hits += 1.0;
 			}
 		}
@@ -1217,7 +1254,7 @@ void main() {
 		vec3 wn;
 		int hit = trace_world(world_origin, world_dir, far, wn);
 		if (hit >= 0) {
-			light = world_light(world_origin + world_dir * far, wn, hit, depth_tex, color_tex, true, true);
+			light = world_light(world_origin + world_dir * far, wn, hit, depth_tex, color_tex, true, true, true);
 			found = true;
 		}
 	}
@@ -1269,7 +1306,7 @@ void main() {
 			float was = texture(prev_depth_tex, uv).r;
 			vec4 was_light = texture(prev_accum, uv);
 			if (abs(was - expected) < 0.05 * expected && !any(isnan(was_light))) {
-				result = mix(was_light, now, mix(0.5, 0.1, sqrt(rough)));
+				result = mix(was_light, now, mix(0.5, 0.06, min(rough * 2.5, 1.0)));
 			}
 		}
 	}
@@ -1316,7 +1353,7 @@ void main() {
 	vec3 wn;
 	int hit = trace_world(origin, dir, far, wn);
 	if (hit >= 0) {
-		arriving = clamp_firefly(world_light(origin + dir * far, wn, hit, depth_tex, color_tex, false, true));
+		arriving = clamp_firefly(world_light(origin + dir * far, wn, hit, depth_tex, color_tex, false, true, false));
 	} else if (escapes(origin, dir, f.ambient.w)) {
 		arriving = background_light(dir);
 	}
@@ -1399,7 +1436,10 @@ void main() {
 		}
 		if (rweights > 1e-4) {
 			vec4 r = rsum / rweights;
-			reflection = vec4(r.a > 1e-3 ? r.rgb / r.a : vec3(0.0), r.a);
+			// Faded out over the last quarter of the cutoff, so neighbouring roughnesses on either side of it don't
+			// switch between two different reflections.
+			float fade = smoothstep(0.0, 1.0, (f.reflect.y - rough) / max(0.25 * f.reflect.y, 1e-3));
+			reflection = vec4(r.a > 1e-3 ? r.rgb / r.a : vec3(0.0), r.a * fade);
 		}
 	}
 	imageStore(reflection_buffer, px, reflection);
