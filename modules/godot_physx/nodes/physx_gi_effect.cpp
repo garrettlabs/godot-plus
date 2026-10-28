@@ -789,7 +789,7 @@ vec3 world_light(vec3 x, vec3 n, int hit, sampler2D depth_tex, sampler2D color_t
 	}
 #ifdef PROBE_SOURCES
 	// Off screen, a reflection probe's capture may have seen the point itself (textures and all).
-	if (sharp) {
+	if (sharp && probe_texture) {
 		vec3 seen;
 		if (probe_source(x, n, hit, seen)) {
 			return seen;
@@ -1194,6 +1194,10 @@ layout(set = 0, binding = 12) uniform sampler2DArray probe_atlas;
 
 #define PROBE_SOURCES
 bool probe_source(vec3 x, vec3 n, int hit, out vec3 seen);
+// Whether this texel's ray may take its colour from a probe's capture: always on mirror-like surfaces, never past
+// a roughness of 0.25 (a blurred reflection doesn't show the texture, and the line-of-sight ray costs), picked at
+// random in between so the change is a blend rather than an edge.
+bool probe_texture = false;
 
 @WORLD@
 
@@ -1269,6 +1273,7 @@ void main() {
 	const int STEPS = 32;
 	float reach = 3.0 * f.misc.y;
 	float jitter = fract(ign(vec2(px) + vec2(13.0, 101.0)) + f.misc.x * 0.6180339887);
+	probe_texture = fract(ign(vec2(px) + vec2(71.0, 29.0)) + f.misc.x * 0.3819660113) < 1.0 - smoothstep(0.15, 0.25, rough);
 	vec3 light = vec3(0.0);
 	bool found = false;
 	float last = 0.0;
