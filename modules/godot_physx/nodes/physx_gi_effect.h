@@ -148,6 +148,9 @@ public:
 		Vector3 probe_core[MAX_PROBES];
 		int probe_overrides[MAX_PROBES] = {};
 		int debug = 0; // 0: GI, 1: last frame's image at the reprojected pixel, 2: reconstruct / project round trip error
+		// The shapes include triangle meshes: the tree has leaves of one shape, and the tracing passes walk it and the
+		// meshes' trees in one loop.
+		bool mesh_walk = false;
 	};
 
 private:
@@ -168,6 +171,10 @@ private:
 	};
 	RID shaders[PASS_MAX];
 	RID pipelines[PASS_MAX];
+	// The tracing passes again, built to walk the shapes and the meshes in one loop (Snapshot::mesh_walk).
+	RID mesh_walk_shaders[PASS_MAX];
+	RID mesh_walk_pipelines[PASS_MAX];
+	bool mesh_walk = false; // this frame's
 	RID linear_sampler;
 	RID mip_sampler;
 	RID nearest_sampler;

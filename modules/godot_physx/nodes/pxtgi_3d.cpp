@@ -683,10 +683,10 @@ uint32_t sah_split(LocalVector<BuildItem> &p_items, uint32_t p_from, uint32_t p_
 	return uint32_t(mid - p_items.ptr());
 }
 
-// The tree: binned SAH splits (median where SAH finds none), leaves of up to four, depth first (an inner node's left
-// child right after it), the primitives in leaf order. Never deeper than 15 levels (the shader's walk keeps a 16-entry
-// stack): a node that deep is a leaf.
-int build_bvh(LocalVector<BuildItem> &p_items, uint32_t p_from, uint32_t p_to, const float *p_source, LocalVector<float> &r_nodes, LocalVector<float> &r_primitives, LocalVector<int> &r_order, int p_depth = 0) {
+// The tree: binned SAH splits (median where SAH finds none), leaves of up to p_max_leaf, depth first (an inner node's
+// left child right after it), the primitives in leaf order. Never deeper than 15 levels (the shader's walk keeps a
+// 16-entry stack): a node that deep is a leaf.
+int build_bvh(LocalVector<BuildItem> &p_items, uint32_t p_from, uint32_t p_to, const float *p_source, LocalVector<float> &r_nodes, LocalVector<float> &r_primitives, LocalVector<int> &r_order, uint32_t p_max_leaf, int p_depth = 0) {
 	// The node's bounds and its shapes' centres' bounds, by plain min / max.
 	Vector3 lo = p_items[p_from].lo;
 	Vector3 hi = p_items[p_from].hi;
@@ -711,7 +711,7 @@ int build_bvh(LocalVector<BuildItem> &p_items, uint32_t p_from, uint32_t p_to, c
 	out[6] = hi.z;
 	const uint32_t count = p_to - p_from;
 	uint32_t mid = p_from;
-	if (count > 4 && p_depth < 15) {
+	if (count > p_max_leaf && p_depth < 15) {
 		mid = sah_split(p_items, p_from, p_to, centres);
 		if (mid == p_from || mid == p_to) {
 			const int axis = centres.get_longest_axis_index();
@@ -735,8 +735,8 @@ int build_bvh(LocalVector<BuildItem> &p_items, uint32_t p_from, uint32_t p_to, c
 		memcpy(&out[7], &leaf_count, sizeof(int));
 		return node;
 	}
-	build_bvh(p_items, p_from, mid, p_source, r_nodes, r_primitives, r_order, p_depth + 1);
-	const int right = build_bvh(p_items, mid, p_to, p_source, r_nodes, r_primitives, r_order, p_depth + 1);
+	build_bvh(p_items, p_from, mid, p_source, r_nodes, r_primitives, r_order, p_max_leaf, p_depth + 1);
+	const int right = build_bvh(p_items, mid, p_to, p_source, r_nodes, r_primitives, r_order, p_max_leaf, p_depth + 1);
 	out = &r_nodes[node * PhysXGIEffect::NODE_FLOATS];
 	memcpy(&out[3], &right, sizeof(int));
 	const int zero = 0;
@@ -1044,6 +1044,10 @@ void PXTGI3D::_rescan() {
 			shape_signature = hash_murmur3_one_64(cs->get_shape().is_valid() ? uint64_t(cs->get_shape()->get_instance_id()) : 0, shape_signature);
 		}
 	}
+	mesh_shapes = false;
+	for (const ShapeEntry &entry : shapes) {
+		mesh_shapes = mesh_shapes || entry.geometry_type == 5;
+	}
 	// The geometry buffer: each hull's planes, each mesh's tree and triangles, laid end to end (in vec4s); rebuilt only
 	// when the set of shapes with geometry changes.
 	uint32_t signature = 0;
@@ -1342,8 +1346,10 @@ void PXTGI3D::_update_primitives(PhysXGIEffect::Snapshot &r_snapshot) {
 		ordered_floats.clear();
 		tree_nodes.clear();
 		leaf_order.clear();
+		// With triangle meshes, leaves of one shape (the walk enters a mesh straight from its leaf).
+		tree_mesh_walk = mesh_shapes;
 		if (!items.is_empty()) {
-			build_bvh(items, 0, items.size(), entry_floats.ptr(), tree_nodes, ordered_floats, leaf_order);
+			build_bvh(items, 0, items.size(), entry_floats.ptr(), tree_nodes, ordered_floats, leaf_order, tree_mesh_walk ? 1 : 4);
 		}
 		entry_slot.resize(n);
 		for (int i = 0; i < n; i++) {
@@ -1406,6 +1412,7 @@ void PXTGI3D::_update_primitives(PhysXGIEffect::Snapshot &r_snapshot) {
 	r_snapshot.nodes = published_nodes;
 	r_snapshot.node_count = published_nodes.size() / PhysXGIEffect::NODE_FLOATS;
 	r_snapshot.primitives_version = primitives_version;
+	r_snapshot.mesh_walk = tree_mesh_walk;
 	moved_poses.clear();
 }
 

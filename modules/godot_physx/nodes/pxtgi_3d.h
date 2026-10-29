@@ -140,6 +140,10 @@ class PXTGI3D : public Node3D {
 	// physics process, where the space may be read even with physics on its own thread.
 	HashMap<ObjectID, Transform3D> moved_poses;
 	LocalVector<int> proxy_entries; // emissive meshes outside any body: checked every frame
+	// Whether the shapes include triangle meshes (found at the last rescan), and whether the tree was last built for
+	// them: leaves of one shape, the meshes walked in the same loop as the shapes (Snapshot::mesh_walk).
+	bool mesh_shapes = false;
+	bool tree_mesh_walk = false;
 	LocalVector<int> emissive_entries; // shapes that give off light: sampled directly
 	LocalVector<float> ordered_floats; // the records in the tree's leaf order
 	LocalVector<float> tree_nodes;

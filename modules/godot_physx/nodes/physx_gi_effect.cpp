@@ -482,6 +482,187 @@ float box_entry(vec3 o, vec3 inv, vec3 lo, vec3 hi, float best) {
 	return enter <= leave ? enter : 1e30;
 }
 
+)"
+					R"(
+#ifdef MESH_WALK
+// With triangle meshes among the shapes: the shape tree and the meshes' trees walked in one loop, a node a step (a
+// shape tree node, or ~node: a node of the mesh being walked, in its own space). Rays in different meshes keep
+// stepping together, where walking each mesh in a loop of its own leaves the rest of their group idle until it's done.
+// The shape tree then has leaves of one shape; a mesh's entries sit above the shape tree's on the shared stack, so
+// popping one of the shape tree's means the mesh is done.
+int walk_world(vec3 o, vec3 d, inout float t, out vec3 normal, bool any_hit) {
+	int hit = -1;
+	if (f.counts.y == 0) {
+		return hit;
+	}
+	vec3 inv = 1.0 / d;
+	if (box_entry(o, inv, bvh.n[0].lo.xyz, bvh.n[0].hi.xyz, t) >= 1e30) {
+		return hit;
+	}
+	int stack[40];
+	int top = 0;
+	int node = 0;
+	int mesh = -1; // the record whose mesh is being walked
+	int mesh_nodes = 0;
+	int mesh_tris = 0;
+	vec3 lo = o;
+	vec3 ld = d;
+	vec3 linv = inv;
+	while (true) {
+		bool in_mesh = node < 0;
+		int at = in_mesh ? ~node : node;
+		vec4 nlo;
+		vec4 nhi;
+		if (in_mesh) {
+			nlo = geo.v[mesh_nodes + at * 2];
+			nhi = geo.v[mesh_nodes + at * 2 + 1];
+		} else {
+			nlo = bvh.n[at].lo;
+			nhi = bvh.n[at].hi;
+		}
+		int count = floatBitsToInt(nhi.w);
+		bool entered = false;
+		if (count == 0) {
+			int left = at + 1;
+			int right = floatBitsToInt(nlo.w);
+			vec3 ro = in_mesh ? lo : o;
+			vec3 rinv = in_mesh ? linv : inv;
+			vec4 al;
+			vec4 ah;
+			vec4 bl;
+			vec4 bh;
+			if (in_mesh) {
+				al = geo.v[mesh_nodes + left * 2];
+				ah = geo.v[mesh_nodes + left * 2 + 1];
+				bl = geo.v[mesh_nodes + right * 2];
+				bh = geo.v[mesh_nodes + right * 2 + 1];
+			} else {
+				al = bvh.n[left].lo;
+				ah = bvh.n[left].hi;
+				bl = bvh.n[right].lo;
+				bh = bvh.n[right].hi;
+			}
+			float tl = box_entry(ro, rinv, al.xyz, ah.xyz, t);
+			float tr = box_entry(ro, rinv, bl.xyz, bh.xyz, t);
+			int el = in_mesh ? ~left : left;
+			int er = in_mesh ? ~right : right;
+			if (tl < 1e30 && tr < 1e30) {
+				bool left_first = tl <= tr;
+				if (top < 40) {
+					stack[top++] = left_first ? er : el;
+				}
+				node = left_first ? el : er;
+				continue;
+			} else if (tl < 1e30) {
+				node = el;
+				continue;
+			} else if (tr < 1e30) {
+				node = er;
+				continue;
+			}
+		} else if (in_mesh) {
+			int first = floatBitsToInt(nlo.w);
+			for (int k = first; k < first + count; k++) {
+				vec3 a = geo.v[mesh_tris + k * 3].xyz;
+				vec3 e1 = geo.v[mesh_tris + k * 3 + 1].xyz - a;
+				vec3 e2 = geo.v[mesh_tris + k * 3 + 2].xyz - a;
+				vec3 pv = cross(ld, e2);
+				float det = dot(e1, pv);
+				if (abs(det) < 1e-12) {
+					continue;
+				}
+				float inv_det = 1.0 / det;
+				vec3 tv = lo - a;
+				float u = dot(tv, pv) * inv_det;
+				if (u < 0.0 || u > 1.0) {
+					continue;
+				}
+				vec3 qv = cross(tv, e1);
+				float w = dot(ld, qv) * inv_det;
+				if (w < 0.0 || u + w > 1.0) {
+					continue;
+				}
+				float th = dot(e2, qv) * inv_det;
+				if (th > 0.0 && th < t) {
+					t = th;
+					vec3 n = cross(e1, e2);
+					if (dot(n, ld) > 0.0) {
+						n = -n;
+					}
+					Primitive q = prims.p[mesh];
+					normal = normalize(n.x * q.r0.xyz + n.y * q.r1.xyz + n.z * q.r2.xyz);
+					hit = mesh;
+					if (any_hit) {
+						return hit;
+					}
+				}
+			}
+		} else {
+			int first = floatBitsToInt(nlo.w);
+			for (int i = first; i < first + count; i++) {
+				vec4 shape = prims.p[i].shape;
+				if (int(shape.x + 0.5) == 5) {
+					// Into a mesh: the ray in its space, its own tree from its root (a leaf holds one shape).
+					Primitive q = prims.p[i];
+					vec3 mo = vec3(dot(q.r0.xyz, o) + q.r0.w, dot(q.r1.xyz, o) + q.r1.w, dot(q.r2.xyz, o) + q.r2.w);
+					vec3 md = vec3(dot(q.r0.xyz, d), dot(q.r1.xyz, d), dot(q.r2.xyz, d));
+					vec3 minv = 1.0 / md;
+					int mn = floatBitsToInt(shape.y);
+					if (mesh_box_entry(mo, minv, mn, t) < 1e30) {
+						mesh = i;
+						mesh_nodes = mn;
+						mesh_tris = floatBitsToInt(shape.z);
+						lo = mo;
+						ld = md;
+						linv = minv;
+						entered = true;
+						break;
+					}
+				} else {
+					vec3 n;
+					if (hit_primitive(prims.p[i], o, d, t, n)) {
+						hit = i;
+						normal = n;
+						if (any_hit) {
+							return hit;
+						}
+					}
+				}
+			}
+		}
+		if (entered) {
+			node = ~0;
+			continue;
+		}
+		// The next waiting node that could still hold something nearer.
+		bool found = false;
+		while (top > 0) {
+			top--;
+			int e = stack[top];
+			if (e < 0) {
+				vec4 bl = geo.v[mesh_nodes + (~e) * 2];
+				vec4 bh = geo.v[mesh_nodes + (~e) * 2 + 1];
+				if (box_entry(lo, linv, bl.xyz, bh.xyz, t) < 1e30) {
+					node = e;
+					found = true;
+					break;
+				}
+			} else {
+				mesh = -1;
+				if (box_entry(o, inv, bvh.n[e].lo.xyz, bvh.n[e].hi.xyz, t) < 1e30) {
+					node = e;
+					found = true;
+					break;
+				}
+			}
+		}
+		if (!found) {
+			break;
+		}
+	}
+	return hit;
+}
+#else
 // The nearest shape along the ray, walking the tree near child first (the far one waits on the stack, and is skipped
 // when a hit closer than its box has been found by then). With any_hit, the first shape in the way will do (shadow
 // rays): returns at once.
@@ -550,6 +731,8 @@ int walk_world(vec3 o, vec3 d, inout float t, out vec3 normal, bool any_hit) {
 	}
 	return hit;
 }
+
+#endif
 
 int trace_world(vec3 o, vec3 d, inout float t, out vec3 normal) {
 	return walk_world(o, d, t, normal, false);
@@ -1747,11 +1930,10 @@ PhysXGIEffect::~PhysXGIEffect() {
 			return;
 		}
 		for (int i = 0; i < PASS_MAX; i++) {
-			if (pipelines[i].is_valid()) {
-				rd->free_rid(pipelines[i]);
-			}
-			if (shaders[i].is_valid()) {
-				rd->free_rid(shaders[i]);
+			for (RID r : { pipelines[i], shaders[i], mesh_walk_pipelines[i], mesh_walk_shaders[i] }) {
+				if (r.is_valid()) {
+					rd->free_rid(r);
+				}
 			}
 		}
 		for (RID r : { linear_sampler, mip_sampler, nearest_sampler, data_buffer, primitive_buffer, node_buffer, cache_keys, cache_cells, geometry_buffer }) {
@@ -1771,21 +1953,30 @@ bool PhysXGIEffect::_ensure(RenderingDevice *p_rd) {
 	}
 	failed = true;
 	for (int i = 0; i < PASS_MAX; i++) {
-		Ref<RDShaderFile> file;
-		file.instantiate();
-		// The sky's radiance map is an array (a layer per roughness) or one texture (a mip per roughness), as the project
-		// sets it for Godot's own shaders.
-		const String defines = RendererSceneRenderRD::get_singleton()->is_using_radiance_octmap_array() ? "#define SKY_OCTMAP_ARRAY\n" : "";
-		const String source = String(SHADERS[i]).replace("@WORLD@", WORLD).replace("@COMMON@", defines + COMMON);
-		ERR_FAIL_COND_V_MSG(file->parse_versions_from_text(source) != OK, false, vformat("PhysXGI: %s shader failed to parse.", PASS_NAMES[i]));
-		Ref<RDShaderSPIRV> spirv = file->get_spirv();
-		ERR_FAIL_COND_V(spirv.is_null(), false);
-		const String err = spirv->get_stage_compile_error(RD::SHADER_STAGE_COMPUTE);
-		ERR_FAIL_COND_V_MSG(!err.is_empty(), false, vformat("PhysXGI: %s shader: %s", PASS_NAMES[i], err));
-		shaders[i] = p_rd->shader_create_from_spirv(file->get_spirv_stages());
-		ERR_FAIL_COND_V(!shaders[i].is_valid(), false);
-		pipelines[i] = p_rd->compute_pipeline_create(shaders[i]);
-		ERR_FAIL_COND_V(!pipelines[i].is_valid(), false);
+		// The tracing passes twice: walking the shapes alone, and the shapes and the meshes in one loop.
+		const bool traces = i == PASS_TRACE || i == PASS_REFLECT || i == PASS_CACHE;
+		for (int variant = 0; variant < (traces ? 2 : 1); variant++) {
+			Ref<RDShaderFile> file;
+			file.instantiate();
+			// The sky's radiance map is an array (a layer per roughness) or one texture (a mip per roughness), as the
+			// project sets it for Godot's own shaders.
+			String defines = RendererSceneRenderRD::get_singleton()->is_using_radiance_octmap_array() ? "#define SKY_OCTMAP_ARRAY\n" : "";
+			if (variant == 1) {
+				defines += "#define MESH_WALK\n";
+			}
+			const String source = String(SHADERS[i]).replace("@WORLD@", WORLD).replace("@COMMON@", defines + COMMON);
+			ERR_FAIL_COND_V_MSG(file->parse_versions_from_text(source) != OK, false, vformat("PhysXGI: %s shader failed to parse.", PASS_NAMES[i]));
+			Ref<RDShaderSPIRV> spirv = file->get_spirv();
+			ERR_FAIL_COND_V(spirv.is_null(), false);
+			const String err = spirv->get_stage_compile_error(RD::SHADER_STAGE_COMPUTE);
+			ERR_FAIL_COND_V_MSG(!err.is_empty(), false, vformat("PhysXGI: %s shader: %s", PASS_NAMES[i], err));
+			RID &shader = variant == 1 ? mesh_walk_shaders[i] : shaders[i];
+			RID &pipeline = variant == 1 ? mesh_walk_pipelines[i] : pipelines[i];
+			shader = p_rd->shader_create_from_spirv(file->get_spirv_stages());
+			ERR_FAIL_COND_V(!shader.is_valid(), false);
+			pipeline = p_rd->compute_pipeline_create(shader);
+			ERR_FAIL_COND_V(!pipeline.is_valid(), false);
+		}
 	}
 	RD::SamplerState state;
 	state.mag_filter = RD::SAMPLER_FILTER_LINEAR;
@@ -1867,12 +2058,13 @@ void PhysXGIView::ensure(RenderingDevice *p_rd, const Size2i &p_frame) {
 void PhysXGIEffect::_dispatch(RenderingDevice *p_rd, int p_pass, const Vector<RD::Uniform> &p_uniforms, const Size2i &p_size, const void *p_push, uint32_t p_push_size) {
 	Vector<RD::Uniform> uniforms = p_uniforms;
 	uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 9, data_buffer));
-	const RID set = p_rd->uniform_set_create(uniforms, shaders[p_pass], 0);
+	const bool walk_meshes = mesh_walk && mesh_walk_pipelines[p_pass].is_valid();
+	const RID set = p_rd->uniform_set_create(uniforms, walk_meshes ? mesh_walk_shaders[p_pass] : shaders[p_pass], 0);
 	ERR_FAIL_COND(!set.is_valid());
 	// GPU timestamps per pass (the visual profiler shows them).
 	p_rd->capture_timestamp(String("PXTGI ") + PASS_NAMES[p_pass]);
 	const RD::ComputeListID list = p_rd->compute_list_begin();
-	p_rd->compute_list_bind_compute_pipeline(list, pipelines[p_pass]);
+	p_rd->compute_list_bind_compute_pipeline(list, walk_meshes ? mesh_walk_pipelines[p_pass] : pipelines[p_pass]);
 	p_rd->compute_list_bind_uniform_set(list, set, 0);
 	if (p_push_size > 0) {
 		p_rd->compute_list_set_push_constant(list, p_push, p_push_size);
@@ -2091,6 +2283,7 @@ void PhysXGIEffect::_render(int p_callback_type, const RenderData *p_render_data
 		data.spot_color[i][3] = s.spot_attenuation[i];
 		data.spot_cone[i][0] = s.spot_cone_attenuation[i];
 	}
+	mesh_walk = s.mesh_walk;
 	data.reflect[0] = (float)s.reflection_mode;
 	data.reflect[1] = s.reflection_cutoff;
 	data.reflect[2] = (float)s.emissive_count;
