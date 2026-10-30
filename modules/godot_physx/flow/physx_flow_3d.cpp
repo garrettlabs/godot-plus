@@ -40,6 +40,7 @@
 #include "core/object/class_db.h"
 #include "core/object/object_id.h"
 #include "core/os/os.h"
+#include "core/templates/hash_set.h"
 #include "scene/3d/camera_3d.h"
 #include "scene/3d/light_3d.h"
 #include "scene/main/window.h"
@@ -474,6 +475,66 @@ void PhysXFlow3D::_gather_colliders(const AABB &p_region, LocalVector<FlowBacken
 	}
 }
 
+// The scene's lights, for the flows to look theirs up in every second or so: found by one walk of the tree when the
+// first flow enters it, then kept from the SceneTree's node_added / node_removed while any flow is in it. (A walk of
+// the whole scene per lookup, per flow, cost tens of milliseconds in scenes of a few hundred thousand nodes.)
+static ObjectID flow_lights_tree;
+static int flow_lights_users = 0;
+static HashSet<ObjectID> flow_lights;
+
+static void _flow_light_added(Node *p_node) {
+	if (Object::cast_to<Light3D>(p_node) != nullptr) {
+		flow_lights.insert(p_node->get_instance_id());
+	}
+}
+
+static void _flow_light_removed(Node *p_node) {
+	if (Object::cast_to<Light3D>(p_node) != nullptr) {
+		flow_lights.erase(p_node->get_instance_id());
+	}
+}
+
+static void _flow_lights_watch(SceneTree *p_tree) {
+	if (flow_lights_users++ > 0) {
+		return;
+	}
+	flow_lights_tree = p_tree->get_instance_id();
+	p_tree->connect(SNAME("node_added"), callable_mp_static(&_flow_light_added));
+	p_tree->connect(SNAME("node_removed"), callable_mp_static(&_flow_light_removed));
+	TypedArray<Node> found = p_tree->get_root()->find_children("*", "Light3D", true, false);
+	for (int i = 0; i < found.size(); i++) {
+		flow_lights.insert(Object::cast_to<Node>(found[i])->get_instance_id());
+	}
+}
+
+static void _flow_lights_unwatch() {
+	if (--flow_lights_users > 0) {
+		return;
+	}
+	SceneTree *tree = Object::cast_to<SceneTree>(ObjectDB::get_instance(flow_lights_tree));
+	if (tree != nullptr) {
+		tree->disconnect(SNAME("node_added"), callable_mp_static(&_flow_light_added));
+		tree->disconnect(SNAME("node_removed"), callable_mp_static(&_flow_light_removed));
+	}
+	flow_lights_tree = ObjectID();
+	flow_lights.clear();
+}
+
+// The lights of class p_class under p_root, in the order p_root->find_children() would list them (tree order).
+static void _flow_lights_under(const Node *p_root, const char *p_class, LocalVector<Node *> &r_lights) {
+	r_lights.clear();
+	for (const ObjectID &id : flow_lights) {
+		Node *n = Object::cast_to<Node>(ObjectDB::get_instance(id));
+		if (n != nullptr && n->is_inside_tree() && n->is_class(p_class) && p_root->is_ancestor_of(n)) {
+			r_lights.push_back(n);
+		}
+	}
+	struct TreeOrder {
+		bool operator()(const Node *p_a, const Node *p_b) const { return p_b->is_greater_than(p_a); }
+	};
+	r_lights.sort_custom<TreeOrder>();
+}
+
 void PhysXFlow3D::_gather_light(Vector3 &r_direction, Color &r_color, Color &r_ambient) {
 	DirectionalLight3D *light = Object::cast_to<DirectionalLight3D>(ObjectDB::get_instance(light_id));
 	if (light == nullptr || !light->is_inside_tree() || light_search_countdown-- <= 0) {
@@ -487,8 +548,9 @@ void PhysXFlow3D::_gather_light(Vector3 &r_direction, Color &r_color, Color &r_a
 			root = get_tree()->get_root(); // a scene built from a script has no current scene
 		}
 		if (root != nullptr) {
-			TypedArray<Node> lights = root->find_children("*", "DirectionalLight3D", true, false);
-			for (int i = 0; i < lights.size(); i++) {
+			LocalVector<Node *> lights;
+			_flow_lights_under(root, "DirectionalLight3D", lights);
+			for (uint32_t i = 0; i < lights.size(); i++) {
 				DirectionalLight3D *l = Object::cast_to<DirectionalLight3D>(lights[i]);
 				if (l != nullptr && l->is_visible_in_tree()) {
 					light = l;
@@ -527,9 +589,10 @@ void PhysXFlow3D::_gather_scatter_lights() {
 			}
 			if (root != nullptr) {
 				for (const char *type : { "OmniLight3D", "SpotLight3D" }) {
-					TypedArray<Node> found = root->find_children("*", type, true, false);
-					for (int i = 0; i < found.size(); i++) {
-						scatter_light_ids.push_back(Object::cast_to<Node>(found[i])->get_instance_id());
+					LocalVector<Node *> found;
+					_flow_lights_under(root, type, found);
+					for (Node *l : found) {
+						scatter_light_ids.push_back(l->get_instance_id());
 					}
 				}
 			}
@@ -830,8 +893,10 @@ void PhysXFlow3D::_notification(int p_what) {
 		case NOTIFICATION_EXIT_TREE: {
 			if (p_what == NOTIFICATION_ENTER_TREE) {
 				add_to_group(GROUP);
+				_flow_lights_watch(get_tree());
 			} else {
 				remove_from_group(GROUP);
+				_flow_lights_unwatch();
 			}
 			// Which flow an emitter without a `flow` path feeds depends on how
 			// many there are.
