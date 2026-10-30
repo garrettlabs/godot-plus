@@ -133,8 +133,11 @@ public:
 class ContactCallback : public PxSimulationEventCallback {
 public:
 	virtual void onContact(const PxContactPairHeader &p_header, const PxContactPair *p_pairs, PxU32 p_nb_pairs) override {
-		GodotPhysXBody3D *b0 = actor_body(p_header.actors[0]);
-		GodotPhysXBody3D *b1 = actor_body(p_header.actors[1]);
+		// A body freed since the last step still gets the touch-lost report of its pairs here, flagged as a removed
+		// actor: its actor may already be released and its GodotPhysXBody3D deleted, so neither is read. That side
+		// is no body to report to or about (its pairs are flagged as removed shapes, skipped below).
+		GodotPhysXBody3D *b0 = (p_header.flags & PxContactPairHeaderFlag::eREMOVED_ACTOR_0) ? nullptr : actor_body(p_header.actors[0]);
+		GodotPhysXBody3D *b1 = (p_header.flags & PxContactPairHeaderFlag::eREMOVED_ACTOR_1) ? nullptr : actor_body(p_header.actors[1]);
 		const bool r0 = b0 && b0->reports_contacts();
 		const bool r1 = b1 && b1->reports_contacts();
 		if (!r0 && !r1) {
