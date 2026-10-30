@@ -1624,6 +1624,46 @@ PackedStringArray PXTGI3D::get_configuration_warnings() const {
 	if (RenderingServer::get_singleton()->get_current_rendering_method() != "forward_plus") {
 		warnings.push_back(RTR("PXTGI3D only works with the Forward+ renderer: with Mobile or Compatibility it does nothing."));
 	}
+	// Reflection probes set so that Godot's shading takes over from PXTGI inside their box (found only here, when the
+	// warnings are asked for).
+	if (is_inside_tree()) {
+		PackedStringArray ambient;
+		PackedStringArray drawn_by_godot;
+		PackedStringArray unshadowed;
+		const TypedArray<Node> found = _scan_root()->find_children("*", "ReflectionProbe", true, false);
+		for (const Variant &v : found) {
+			const ReflectionProbe *probe = Object::cast_to<ReflectionProbe>(v);
+			if (probe == nullptr || !probe->is_visible_in_tree()) {
+				continue;
+			}
+			if (probe->get_ambient_mode() != ReflectionProbe::AMBIENT_DISABLED) {
+				ambient.push_back(probe->get_name());
+			}
+			if (reflection_mode == 3) {
+				if (probe->get_intensity() > 0.0f) {
+					drawn_by_godot.push_back(probe->get_name());
+				} else if (!probe->are_shadows_enabled()) {
+					unshadowed.push_back(probe->get_name());
+				}
+			}
+		}
+		auto names = [](const PackedStringArray &p_names) {
+			String list;
+			for (int i = 0; i < MIN(p_names.size(), 3); i++) {
+				list += (i > 0 ? ", \"" : "\"") + p_names[i] + "\"";
+			}
+			return p_names.size() > 3 ? vformat(RTR("%s and %d more"), list, p_names.size() - 3) : list;
+		};
+		if (!ambient.is_empty()) {
+			warnings.push_back(vformat(RTR("ReflectionProbe %s: its ambient mode isn't Disabled, so inside its box Godot replaces PXTGI's bounce light with the probe's ambient light."), names(ambient)));
+		}
+		if (!drawn_by_godot.is_empty()) {
+			warnings.push_back(vformat(RTR("Reflection mode is Traced + Probes, but ReflectionProbe %s has an intensity above 0: inside its box Godot draws the probe's reflection instead of PXTGI's. Set its intensity to 0 to let PXTGI use it."), names(drawn_by_godot)));
+		}
+		if (!unshadowed.is_empty()) {
+			warnings.push_back(vformat(RTR("Reflection mode is Traced + Probes, but ReflectionProbe %s has shadows off: its capture has no shadows, so what lies in shadow is reflected as if lit. Turn on its Enable Shadows."), names(unshadowed)));
+		}
+	}
 	return warnings;
 }
 

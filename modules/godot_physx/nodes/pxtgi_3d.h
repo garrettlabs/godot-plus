@@ -194,7 +194,10 @@ public:
 	int get_rays_per_texel() const { return rays_per_texel; }
 	void set_multi_bounce(bool p_value) { multi_bounce = p_value; }
 	bool get_multi_bounce() const { return multi_bounce; }
-	void set_reflection_mode(int p_value) { reflection_mode = CLAMP(p_value, 0, 3); }
+	void set_reflection_mode(int p_value) {
+		reflection_mode = CLAMP(p_value, 0, 3);
+		update_configuration_warnings();
+	}
 	int get_reflection_mode() const { return reflection_mode; }
 	void set_reflection_roughness_cutoff(float p_value) { reflection_cutoff = CLAMP(p_value, 0.0f, 1.0f); }
 	float get_reflection_roughness_cutoff() const { return reflection_cutoff; }
