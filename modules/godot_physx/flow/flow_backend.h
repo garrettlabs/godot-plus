@@ -134,8 +134,11 @@ struct ScatterSource {
 // texture holding the scene color with the gas composited in (to copy back
 // before the next Flow call), or 0.
 // With r_scatter, also fills in what the scattering pass reads.
-uint64_t grid_render_rd(Grid *p_grid, const float p_view[16], const float p_projection[16], uint32_t p_width, uint32_t p_height, uint64_t p_depth_rid, uint32_t p_depth_width, uint32_t p_depth_height, uint64_t p_color_rid, ScatterSource *r_scatter = nullptr);
-// Ends the render's Flow frame; call after the result has been copied.
+// p_offscreen: run Flow's view-independent lighting pass first. Several views
+// in one Flow frame (an XR camera's eyes) run it for the first one only.
+uint64_t grid_render_rd(Grid *p_grid, const float p_view[16], const float p_projection[16], uint32_t p_width, uint32_t p_height, uint64_t p_depth_rid, uint32_t p_depth_width, uint32_t p_depth_height, uint64_t p_color_rid, ScatterSource *r_scatter = nullptr, bool p_offscreen = true);
+// Ends the render's Flow frame; call after the result has been copied (after
+// the last view's).
 void grid_render_rd_finish(Grid *p_grid);
 
 // Diagnostics.

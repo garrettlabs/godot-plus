@@ -291,40 +291,16 @@ void PhysXFlowRenderEffect::_render(int p_callback_type, const RenderData *p_ren
 		return;
 	}
 	const Size2i size = buffers->get_internal_size();
-	const RID color = buffers->get_internal_texture();
-	// (A screen-space fluid has written its surface into this depth: the gas
-	// is marched up to the liquid.)
-	const RID depth = buffers->get_depth_texture();
-	if (size.x <= 0 || size.y <= 0 || !color.is_valid() || !depth.is_valid()) {
+	// An XR camera renders its eyes as the layers of one frame, each with its
+	// own projection (on top of the shared camera transform): every eye gets
+	// its own pass, on its own slice of the color and depth.
+	const uint32_t view_count = MAX(buffers->get_view_count(), 1u);
+	if (size.x <= 0 || size.y <= 0 || !buffers->get_internal_texture().is_valid() || !buffers->get_depth_texture().is_valid()) {
 		return;
 	}
-
-	// The projection the depth buffer was rendered with: Godot's camera
-	// projection already carries its depth correction (reverse Z in 0..1, Y
-	// as this target needs) and TAA jitter, so Flow reconstructs scene
-	// positions from depth exactly.
-	Projection projection = scene->get_cam_projection();
-	// Flow reads its targets with row 0 at clip-space +Y; Godot's are the
-	// other way up (checked on screen: without this the plume is upside down).
-	Projection y_flip;
-	y_flip.columns[1][1] = -1.0;
-	projection = y_flip * projection;
-	// Flow's world is in its own units: scale down to meters first.
-	Projection to_meters;
-	const real_t inv = 1.0 / FlowBackend::UNITS_PER_METER;
-	to_meters.columns[0][0] = inv;
-	to_meters.columns[1][1] = inv;
-	to_meters.columns[2][2] = inv;
-	const Projection view = Projection(scene->get_cam_transform().affine_inverse()) * to_meters;
-	float view_f[16];
-	float projection_f[16];
-	to_flow(view, view_f);
-	to_flow(projection, projection_f);
-	// For the light scattering pass: clip space (as the depth buffer has it)
-	// straight back to world meters.
-	const Projection inv_view_projection = (scene->get_cam_projection() * Projection(scene->get_cam_transform().affine_inverse())).inverse();
-	// The frame's lights and shadow atlas, for the scattering pass's shadows.
-	const RenderDataRD *render_data_rd = dynamic_cast<const RenderDataRD *>(p_render_data);
+	if (!_ensure_copy_pipeline(rd)) {
+		return;
+	}
 
 	// Each flow composites over what's drawn so far, so far ones go first.
 	const Vector3 eye = scene->get_cam_transform().origin;
@@ -340,42 +316,80 @@ void PhysXFlowRenderEffect::_render(int p_callback_type, const RenderData *p_ren
 			SWAP(sorted[j - 1], sorted[j]);
 		}
 	}
-	if (!_ensure_copy_pipeline(rd)) {
-		return;
-	}
-	// The gas is drawn straight into the frame when it can be written from a
-	// compute pass (Forward+). The Mobile renderer's can't, and holds color
-	// halved: the gas is drawn on a full-brightness RGBA16F copy then, written
-	// back after.
-	const bool direct = rd->texture_get_format(color).usage_bits & RD::TEXTURE_USAGE_STORAGE_BIT;
+	// Flow's world is in its own units: scale down to meters first.
+	Projection to_meters;
+	const real_t inv = 1.0 / FlowBackend::UNITS_PER_METER;
+	to_meters.columns[0][0] = inv;
+	to_meters.columns[1][1] = inv;
+	to_meters.columns[2][2] = inv;
+	const Projection world_to_camera = Projection(scene->get_cam_transform().affine_inverse());
+	const Projection view = world_to_camera * to_meters;
+	float view_f[16];
+	to_flow(view, view_f);
+	// Flow reads its targets with row 0 at clip-space +Y; Godot's are the
+	// other way up (checked on screen: without this the plume is upside down).
+	Projection y_flip;
+	y_flip.columns[1][1] = -1.0;
+	// The frame's lights and shadow atlas, for the scattering pass's shadows.
+	const RenderDataRD *render_data_rd = dynamic_cast<const RenderDataRD *>(p_render_data);
 	const float luminance = buffers->get_luminance_multiplier();
-	RID target = color;
-	if (!direct) {
-		if (!work.is_valid() || work_size != size) {
-			if (work.is_valid()) {
-				rd->free_rid(work);
-			}
-			RD::TextureFormat tf;
-			tf.width = size.x;
-			tf.height = size.y;
-			tf.format = RD::DATA_FORMAT_R16G16B16A16_SFLOAT;
-			tf.usage_bits = RD::TEXTURE_USAGE_STORAGE_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT;
-			work = rd->texture_create(tf, RD::TextureView());
-			work_size = size;
+
+	for (uint32_t v = 0; v < view_count; v++) {
+		const RID color = view_count > 1 ? buffers->get_internal_texture(v) : buffers->get_internal_texture();
+		// (A screen-space fluid has written its surface into this depth: the gas
+		// is marched up to the liquid.)
+		const RID depth = view_count > 1 ? buffers->get_depth_texture(v) : buffers->get_depth_texture();
+		if (!color.is_valid() || !depth.is_valid()) {
+			continue;
 		}
-		copy_texture(rd, color, work, size, luminance);
-		target = work;
-	}
-	// The light shafts (drawn next) take their light from the frame without the
-	// gas: glowing gas isn't the sun. (As the frame holds it: halved on Mobile.)
-	const RID backdrop = PhysXLightShaftsEffect::gas_backdrop(rd, size);
-	if (backdrop.is_valid()) {
-		copy_texture(rd, target, backdrop, size, direct ? 1.0f : 1.0f / luminance);
-	}
-	for (PhysXFlow3D *flow : sorted) {
-		flow->render_rd(this, rd, view_f, projection_f, size, depth, target, inv_view_projection, eye, render_data_rd != nullptr ? render_data_rd->lights : nullptr, render_data_rd != nullptr ? render_data_rd->shadow_atlas : RID());
-	}
-	if (!direct) {
-		_write_back(rd, work, color, 1.0f / luminance);
+		// The projection the depth buffer was rendered with: Godot's camera
+		// projection already carries its depth correction (reverse Z in 0..1, Y
+		// as this target needs) and TAA jitter, so Flow reconstructs scene
+		// positions from depth exactly. An eye's has the eye's offset in it.
+		const Projection camera_projection = view_count > 1 ? scene->get_view_projection(v) : scene->get_cam_projection();
+		float projection_f[16];
+		to_flow(y_flip * camera_projection, projection_f);
+		// For the light scattering pass: clip space (as the depth buffer has it)
+		// straight back to world meters.
+		const Projection inv_view_projection = (camera_projection * world_to_camera).inverse();
+		const Vector3 view_eye = view_count > 1 ? scene->get_cam_transform().xform(scene->get_view_eye_offset(v)) : eye;
+
+		// The gas is drawn straight into the frame when it can be written from a
+		// compute pass (Forward+). The Mobile renderer's can't, and holds color
+		// halved: the gas is drawn on a full-brightness RGBA16F copy then, written
+		// back after.
+		const bool direct = rd->texture_get_format(color).usage_bits & RD::TEXTURE_USAGE_STORAGE_BIT;
+		RID target = color;
+		if (!direct) {
+			if (!work.is_valid() || work_size != size) {
+				if (work.is_valid()) {
+					rd->free_rid(work);
+				}
+				RD::TextureFormat tf;
+				tf.width = size.x;
+				tf.height = size.y;
+				tf.format = RD::DATA_FORMAT_R16G16B16A16_SFLOAT;
+				tf.usage_bits = RD::TEXTURE_USAGE_STORAGE_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT;
+				work = rd->texture_create(tf, RD::TextureView());
+				work_size = size;
+			}
+			copy_texture(rd, color, work, size, luminance);
+			target = work;
+		}
+		// The light shafts (drawn next) take their light from the frame without the
+		// gas: glowing gas isn't the sun. (As the frame holds it: halved on Mobile.)
+		// They draw one view, the first.
+		if (v == 0) {
+			const RID backdrop = PhysXLightShaftsEffect::gas_backdrop(rd, size);
+			if (backdrop.is_valid()) {
+				copy_texture(rd, target, backdrop, size, direct ? 1.0f : 1.0f / luminance);
+			}
+		}
+		for (PhysXFlow3D *flow : sorted) {
+			flow->render_rd(this, rd, view_f, projection_f, size, depth, target, inv_view_projection, view_eye, render_data_rd != nullptr ? render_data_rd->lights : nullptr, render_data_rd != nullptr ? render_data_rd->shadow_atlas : RID(), v == 0, v + 1 == view_count);
+		}
+		if (!direct) {
+			_write_back(rd, work, color, 1.0f / luminance);
+		}
 	}
 }

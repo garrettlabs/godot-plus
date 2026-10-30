@@ -279,8 +279,9 @@ public:
 	// From PhysXFlowRenderEffect, on the render thread.
 	Vector3 get_draw_center() const { return draw_center; }
 	// p_lights / p_shadow_atlas: the frame's light instances and shadow atlas
-	// (RenderDataRD), for the scattering pass's shadows.
-	void render_rd(PhysXFlowRenderEffect *p_effect, RenderingDevice *p_rd, const float p_view[16], const float p_projection[16], const Size2i &p_size, const RID &p_depth, const RID &p_color, const Projection &p_inv_view_projection, const Vector3 &p_camera, const PagedArray<RID> *p_lights, const RID &p_shadow_atlas);
+	// (RenderDataRD), for the scattering pass's shadows. An XR camera's eyes are
+	// drawn one after another in one Flow frame: p_first_view / p_last_view.
+	void render_rd(PhysXFlowRenderEffect *p_effect, RenderingDevice *p_rd, const float p_view[16], const float p_projection[16], const Size2i &p_size, const RID &p_depth, const RID &p_color, const Projection &p_inv_view_projection, const Vector3 &p_camera, const PagedArray<RID> *p_lights, const RID &p_shadow_atlas, bool p_first_view = true, bool p_last_view = true);
 
 	PackedStringArray get_configuration_warnings() const override;
 
