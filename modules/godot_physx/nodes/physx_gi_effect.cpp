@@ -2495,10 +2495,10 @@ void PhysXGIEffect::_render(int p_callback_type, const RenderData *p_render_data
 
 	RID reflections = v.reflect_accum[v.current]; // what the resolve reads: the accumulated reflections, filtered
 	{
-		int32_t size[4] = { v.reflect_size.x, v.reflect_size.y, 0, 0 };
-		_dispatch(rd, PASS_REFLECT, { sampled(0, nearest_sampler, depth), sampled(1, nearest_sampler, normal), sampled(2, linear_sampler, color), RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 3, v.reflect_trace), RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 4, primitive_buffer), RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 5, node_buffer), RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 6, cache_keys), RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 7, cache_cells), RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 10, geometry_buffer), sampled(11, linear_sampler, sky_map), sampled(12, linear_sampler, probe_atlas) }, v.reflect_size, size, sizeof(size));
-		size[2] = v.have_history ? 1 : 0;
-		_dispatch(rd, PASS_REFLECT_TEMPORAL, { sampled(0, nearest_sampler, v.reflect_trace), sampled(1, linear_sampler, v.reflect_accum[prev]), sampled(2, nearest_sampler, v.reflect_depth[prev]), sampled(3, nearest_sampler, depth), sampled(4, nearest_sampler, normal), RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 5, v.reflect_accum[v.current]), RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 6, v.reflect_depth[v.current]) }, v.reflect_size, size, sizeof(size));
+		int32_t reflect_params[4] = { v.reflect_size.x, v.reflect_size.y, 0, 0 };
+		_dispatch(rd, PASS_REFLECT, { sampled(0, nearest_sampler, depth), sampled(1, nearest_sampler, normal), sampled(2, linear_sampler, color), RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 3, v.reflect_trace), RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 4, primitive_buffer), RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 5, node_buffer), RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 6, cache_keys), RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 7, cache_cells), RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 10, geometry_buffer), sampled(11, linear_sampler, sky_map), sampled(12, linear_sampler, probe_atlas) }, v.reflect_size, reflect_params, sizeof(reflect_params));
+		reflect_params[2] = v.have_history ? 1 : 0;
+		_dispatch(rd, PASS_REFLECT_TEMPORAL, { sampled(0, nearest_sampler, v.reflect_trace), sampled(1, linear_sampler, v.reflect_accum[prev]), sampled(2, nearest_sampler, v.reflect_depth[prev]), sampled(3, nearest_sampler, depth), sampled(4, nearest_sampler, normal), RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 5, v.reflect_accum[v.current]), RD::Uniform(RD::UNIFORM_TYPE_IMAGE, 6, v.reflect_depth[v.current]) }, v.reflect_size, reflect_params, sizeof(reflect_params));
 		// Two filter passes, the taps 1 and 2 texels apart, into their own textures (the history stays unfiltered).
 		for (int i = 0; i < 2; i++) {
 			int32_t step[4] = { 1 << i, 0, v.reflect_size.x, v.reflect_size.y };

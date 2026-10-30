@@ -279,7 +279,7 @@ void WaterWakeSolver::step(double p_delta, const Vector2 &p_center, const Vector
 	PackedByteArray params;
 	params.resize(PARAMS_BYTES);
 	uint8_t *w = params.ptrw();
-	const int32_t grid[4] = { n, MIN(p_sources.size(), WaterWakeSolverGPU::MAX_SOURCES), shift.x, shift.y };
+	const int32_t grid[4] = { n, int32_t(MIN(p_sources.size(), int64_t(WaterWakeSolverGPU::MAX_SOURCES))), shift.x, shift.y };
 	// The explicit scheme is stable up to 0.5; wave speed is capped to keep it there.
 	const float k = MIN(p_wave_speed * p_wave_speed * dt * dt / (dx * dx), 0.45f);
 	const float wave[4] = { k, p_damping * dt, p_border_damping * dt, p_border_width };

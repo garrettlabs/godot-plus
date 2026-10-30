@@ -1319,11 +1319,11 @@ void PhysXParticleFluid3D::_validate_property(PropertyInfo &p_property) const {
 	}
 	// Each solver's own settings only -- for Auto, the solver it picks on this
 	// machine (named in the solver dropdown). Hidden values are still saved.
-	const bool mpm = _resolved_solver() == SOLVER_MPM;
-	if (mpm && (name.begins_with("foam_") || name == "surface_tension" || name == "cohesion" || name == "vorticity" || name == "adhesion" || name == "surface_friction" || name == "surface_anisotropy")) {
+	const bool uses_mpm = _resolved_solver() == SOLVER_MPM;
+	if (uses_mpm && (name.begins_with("foam_") || name == "surface_tension" || name == "cohesion" || name == "vorticity" || name == "adhesion" || name == "surface_friction" || name == "surface_anisotropy")) {
 		p_property.usage = PROPERTY_USAGE_NO_EDITOR;
 	}
-	if (!mpm && name.begins_with("mpm_")) {
+	if (!uses_mpm && name.begins_with("mpm_")) {
 		p_property.usage = PROPERTY_USAGE_NO_EDITOR;
 	}
 	// The MPM fluid path is block-sparse and boundless: the grid cell size is
