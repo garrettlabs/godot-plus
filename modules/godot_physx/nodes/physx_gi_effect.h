@@ -60,6 +60,7 @@ public:
 	RID reflect_trace; // half size: this frame's reflection rays (light, found)
 	RID reflect_accum[2]; // half size: accumulated, ping-ponged
 	RID reflect_depth[2];
+	RID reflect_filtered[2]; // half size: the accumulated reflections after each filter pass (for the resolve only)
 	Size2i reflect_size;
 	Size2i trace_size;
 	Size2i targets_for;
@@ -167,6 +168,7 @@ private:
 		PASS_REFLECT_TEMPORAL,
 		PASS_CACHE,
 		PASS_RESOLVE,
+		PASS_REFLECT_FILTER,
 		PASS_MAX,
 	};
 	RID shaders[PASS_MAX];
