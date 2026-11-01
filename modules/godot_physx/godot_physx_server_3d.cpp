@@ -1544,11 +1544,13 @@ void GodotPhysXServer3D::init() {
 	}
 #endif
 
-	// Size the PhysX CPU task pool. The CPU solver scales with worker count, so
-	// give it most of the machine (leaving a core for the main thread + render).
-	// With GPU dynamics the CPU mostly waits on the GPU each step, so extra
-	// workers only add coordination overhead below very large scene sizes -- keep
-	// that pool small. Both cases are backed by benchmarks;
+	// Size the PhysX CPU task pool. In a physics-only benchmark the CPU solver
+	// scales with worker count, but a game frame also runs scripts, animation,
+	// culling and the render thread on the same cores, and a pool sized to the
+	// machine starves them: on a 24-core host the heavy stress scene ran at
+	// 16.3 ms with 16 workers against 12.2 ms with 4 or 8 (Jolt: 12.3), so the
+	// pool takes a quarter of the cores, between 2 and 8. With GPU dynamics the
+	// CPU mostly waits on the GPU each step and an even smaller pool is enough.
 	// physics/physx_3d/simulation/cpu_worker_threads overrides (0 = auto).
 	const int cpu_count = OS::get_singleton()->get_processor_count();
 	uint32_t worker_threads;
@@ -1557,7 +1559,7 @@ void GodotPhysXServer3D::init() {
 	} else {
 		worker_threads = px_cuda
 				? (uint32_t)CLAMP(cpu_count / 4, 2, 4)
-				: (uint32_t)CLAMP(cpu_count - 1, 1, 16);
+				: (uint32_t)CLAMP(cpu_count / 4, 2, 8);
 	}
 	px_dispatcher = PxDefaultCpuDispatcherCreate(worker_threads);
 	ERR_FAIL_NULL_MSG(px_dispatcher, "PhysX: PxDefaultCpuDispatcherCreate failed.");
