@@ -64,7 +64,7 @@ A release is a build of `main` handed to the team: editor, console launcher, the
 DLLs and the two export templates, all from one commit.
 
 - **Version string:** Godot's own scheme carries it. `version.py` sets
-  `module_config = "plus"` and the build runs with `BUILD_NAME=plus.N`, so the editor
+  `module_config = "plus"` and the build runs with `BUILD_NAME=N` (just the number; `module_config` already supplies "plus"), so the editor
   reports `4.8.beta.plus.N.<hash>` and looks for export templates in
   `export_templates/4.8.beta.plus/`, which keeps them apart from stock 4.8 templates.
 - **Release tag:** `v4.8-beta-plus.N` on `main`, where `4.8-beta` is the upstream version
