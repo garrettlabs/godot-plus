@@ -1,10 +1,11 @@
 # godot-plus
 
-**godot-plus is the Godot engine that MAINTENANCE: NIGHT SHIFT ships on:** upstream
-Godot 4.8 plus a small set of engine patches the game needs and upstream does not
-have. It is not a general-purpose fork and nothing here is submitted upstream;
-`main` tracks upstream master and each patch is kept as its own merged topic
-branch so the whole set rebases onto new upstream releases.
+**godot-plus is Godot 4.8 with a small set of rendering and physics additions that upstream
+does not have**: DLSS through NVIDIA Streamline, screen-space contact shadows for omni and
+spot lights, a PhysX 5 physics backend with GPU dynamics, and profiling zones for Tracy.
+`main` tracks upstream master; every addition is kept as its own merged topic branch so the
+set rebases onto new upstream releases. The patches are maintained here and are not
+submitted upstream.
 
 Upstream's own README follows below under *Godot Engine*.
 
@@ -12,10 +13,10 @@ Upstream's own README follows below under *Godot Engine*.
 
 | Feature | Where | Notes |
 |---|---|---|
-| **DLSS Super Resolution** via NVIDIA Streamline 2.10, on Vulkan and D3D12 | `drivers/streamline/`, `servers/rendering/renderer_rd/effects/dlss.*`, `Viewport.SCALING_3D_MODE_DLSS` | Ported from [NVIDIA-RTX/godot](https://github.com/NVIDIA-RTX/godot) (DLSS subset only: no path tracer, no Ray Reconstruction). Needs the Streamline runtime DLLs beside the binary and an RTX GPU; otherwise it reports unavailable and FSR 2 remains. Project settings under `rendering/streamline/`. |
+| **DLSS Super Resolution** via NVIDIA Streamline 2.10, on Vulkan and D3D12 | `drivers/streamline/`, `servers/rendering/renderer_rd/effects/dlss.*`, `Viewport.SCALING_3D_MODE_DLSS` | Ported from [NVIDIA-RTX/godot](https://github.com/NVIDIA-RTX/godot) (the DLSS subset only: no path tracer, no Ray Reconstruction). Needs the Streamline runtime DLLs beside the binary and an RTX GPU; otherwise the mode reports unavailable and FSR 2 remains. Project settings under `rendering/streamline/`. In the current release DLSS is active on Vulkan only; with D3D12 the viewport falls back to FSR 2 (open issue, see CHANGELOG-plus.md). |
 | **Screen-space contact shadows for omni and spot lights** | `renderer_rd/effects/ss_effects.*`, `light_storage.*`, `scene_forward_lights_inc.glsl` | Upstream traces them for directional lights only. `rendering/lights_and_shadows/contact_shadow/max_positional_lights` (default 4) caps the per-frame passes; the nearest lights that allow them get a layer. |
-| **PhysX 5.10 physics backend** (`physics/3d/physics_engine = "PhysX"`) with GPU rigid-body dynamics, vehicles, cloth, fluids, water, Flow gas, Blast destruction, traced GI | `modules/godot_physx/` | Wild Ox Studios' module from [uno1982/godot](https://github.com/uno1982/godot), imported verbatim and ported to 4.8. The PhysX SDK is built out of tree (see Building). Jolt stays the default; GPU dynamics (`physics/physx_3d/simulation/gpu_dynamics`) pays off only with thousands of dynamic bodies. Flow and Blast need their own SDK builds and are not in our builds yet. |
-| **Profiling zones** for animation, skeletons, scene tree and the 3D render path | `scene/animation`, `scene/3d`, `scene/main`, `servers/rendering` | Active in `profiler=tracy` builds only; they let a Tracy capture attribute a frame to shadow culling, draw submission, animation and script instead of one opaque zone. |
+| **PhysX 5.10 physics backend** (`physics/3d/physics_engine = "PhysX"`) with GPU rigid-body dynamics, vehicles, cloth, fluids, water, Flow gas, Blast destruction and a traced GI | `modules/godot_physx/` | Wild Ox Studios' module from [uno1982/godot](https://github.com/uno1982/godot), imported verbatim and ported to 4.8. The PhysX SDK is built out of tree (see Building). Jolt remains the default physics engine; GPU dynamics (`physics/physx_3d/simulation/gpu_dynamics`) pays off with thousands of dynamic bodies and costs a little otherwise. Flow and Blast need their own SDK builds and are not in the release packages yet. |
+| **Profiling zones** for animation, skeletons, scene tree and the 3D render path | `scene/animation`, `scene/3d`, `scene/main`, `servers/rendering` | Active in `profiler=tracy` builds only. A Tracy capture can then attribute a frame to shadow culling, draw submission, animation and script instead of one opaque zone. |
 
 Everything else is upstream Godot 4.8-beta at the commit `master` points to.
 
@@ -23,21 +24,21 @@ Everything else is upstream Godot 4.8-beta at the commit `master` points to.
 
 | Branch | Role |
 |---|---|
-| `main` | The engine. Upstream `master` plus every patch, merged `--no-ff`; builds and releases come from here. Upstream is pulled in deliberately at chosen commits, not daily, so a build of `main` is reproducible. |
+| `main` | The engine. Upstream `master` plus every patch, merged `--no-ff`; builds and releases come from here. Upstream is pulled in at chosen commits, not continuously, so a build of `main` is reproducible. |
 | `master` | Mirror of `godotengine/godot` master. Never patched. |
-| `streamline-dlss`, `contact-shadows-positional`, `physx5-module`, `profiling-zones` | One patch each, cut from `master`, merged into `main` once they build and pass the project smoke test. |
+| `streamline-dlss`, `contact-shadows-positional`, `physx5-module`, `profiling-zones`, `plus-versioning` | One patch each, cut from `master` and merged into `main` once they build and pass testing. |
 
 ## Building (Windows)
 
 Prerequisites on top of a stock Godot 4.8 Windows editor build (Python 3, SCons ≥ 4.4,
-VS 2022 Build Tools with the C++ workload and Windows SDK, the D3D12 Agility SDK
-bundle from `misc/scripts/install_d3d12_sdk_windows.py`, AccessKit from
+VS 2022 Build Tools with the C++ workload and Windows SDK, the D3D12 Agility SDK bundle
+from `misc/scripts/install_d3d12_sdk_windows.py`, AccessKit from
 `misc/scripts/install_accesskit.py`):
 
 - **PhysX SDK**: `python modules/godot_physx/misc/build_physx.py --platform windows --gpu`
-  clones NVIDIA's PhysX monorepo beside this repo, patches it and installs a static
-  SDK. `--gpu` needs the CUDA 12.8 toolkit (`winget install Nvidia.CUDA --version 12.8`);
-  if CMake then reports *No CUDA toolset found*, copy the four files from
+  clones NVIDIA's PhysX monorepo beside this repo, patches it and installs a static SDK.
+  `--gpu` needs the CUDA 12.8 toolkit (`winget install Nvidia.CUDA --version 12.8`). If
+  CMake then reports *No CUDA toolset found*, copy the four files from
   `%CUDA_PATH%\extras\visual_studio_integration\MSBuildExtensions` into
   `<Build Tools>\MSBuild\Microsoft\VC\v170\BuildCustomizations\`, and make sure
   `CUDA_PATH_V12_8` is set in the shell that runs the build.
@@ -53,36 +54,35 @@ scons platform=windows target=template_release physx_sdk=<sdk>/install/vc17win64
 scons platform=windows target=template_debug   physx_sdk=<sdk>/install/vc17win64-godot-gpu/PhysX physx_gpu=yes
 ```
 
-`physx_sdk=` is required on every build or the PhysX module is silently skipped. The
-build copies `PhysXGpu_64.dll` and the Agility SDK's `D3D12Core.dll` /
-`d3d12SDKLayers.dll` beside the binaries; ship all of them with the exe. A build with
+`physx_sdk=` is required on every build or the PhysX module is silently skipped. The build
+copies `PhysXGpu_64.dll` and the Agility SDK's `D3D12Core.dll` / `d3d12SDKLayers.dll`
+beside the binaries; ship all of them with the executable. A build with
 `profiler=tracy profiler_path=<tracy source>` adds the Tracy client (development only).
 
 ## Releases and versioning
 
-A release is a build of `main` handed to the team: editor, console launcher, the runtime
-DLLs and the two export templates, all from one commit.
+A release is a build of `main`: editor, console launcher, the runtime DLLs and the two
+export templates, all from one commit, packaged as a zip on GitHub Releases.
 
 - **Version string:** Godot's own scheme carries it. `version.py` sets
-  `module_config = "plus"` and the build runs with `BUILD_NAME=N` (just the number; `module_config` already supplies "plus"), so the editor
-  reports `4.8.beta.plus.N.<hash>` and looks for export templates in
-  `export_templates/4.8.beta.plus/`, which keeps them apart from stock 4.8 templates.
+  `module_config = ".plus"` and the build runs with `BUILD_NAME=N` (just the release
+  number), so the editor reports `4.8.beta.plus.N.<hash>` and looks for export templates
+  in `export_templates/4.8.beta.plus/`, apart from stock 4.8 templates.
 - **Release tag:** `v4.8-beta-plus.N` on `main`, where `4.8-beta` is the upstream version
-  the release is based on and `N` counts our releases on that base, starting at 1.
-  When the base moves (for example to `4.8-stable`), `N` restarts at 1. The short hash
-  in the version string identifies the exact commit.
-- **Package name:** `godot-plus-<tag>-win64.zip`, containing the files listed in its
-  `README.txt`. Release packages are attached to the tag on GitHub Releases and copied
-  to the team share.
+  the release is based on and `N` counts releases on that base, starting at 1. When the
+  base moves (for example to `4.8-stable`), `N` restarts at 1. The short hash in the
+  version string identifies the exact commit.
+- **Package name:** `godot-plus-<tag>-win64.zip`, with a README.txt listing its files and
+  how to install the templates.
 - **Changelog:** `CHANGELOG-plus.md` lists, per release, the upstream base commit and the
   patches merged since the previous release.
 
 ## Licensing
 
 Godot is MIT. The PhysX module is MIT (Wild Ox Studios) and links the PhysX SDK
-(BSD-3-Clause; notice in `modules/godot_physx/PHYSX-LICENSE.md`). Streamline is MIT;
-the NVIDIA DLSS runtime (`nvngx_dlss.dll`) is redistributed under the Streamline SDK
-terms. Upstream's `LICENSE.txt` and `COPYRIGHT.txt` apply to everything else.
+(BSD-3-Clause; notice in `modules/godot_physx/PHYSX-LICENSE.md`). Streamline is MIT; the
+NVIDIA DLSS runtime (`nvngx_dlss.dll`) is redistributed under the Streamline SDK terms.
+Upstream's `LICENSE.txt` and `COPYRIGHT.txt` apply to everything else.
 
 ---
 
