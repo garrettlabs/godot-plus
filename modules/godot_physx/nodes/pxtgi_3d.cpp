@@ -65,6 +65,7 @@
 
 #ifdef TOOLS_ENABLED
 #include "editor/scene/3d/node_3d_editor_plugin.h"
+#include "editor/scene/3d/node_3d_editor_viewport.h"
 #include "main/main.h"
 #endif
 #include "servers/rendering/renderer_rd/environment/gi.h"
