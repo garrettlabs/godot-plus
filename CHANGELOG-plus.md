@@ -4,6 +4,15 @@ Each entry names the upstream Godot commit the release is based on and the patch
 merged into `main` since the previous release. Version strings follow
 `4.8.beta.plus.N.<hash>` (built with `BUILD_NAME=N`); tags are `v4.8-beta-plus.N`. See README.md for the scheme.
 
+## Unreleased
+
+- **physx5-module** — Blast destruction and Flow gas are now built in (`ed658b07a8`): the
+  Blast code had never compiled against 4.8 (missing physics-server include, and the
+  `EditorContextMenuPlugin` rework of 78c4f8db69 changed the fracture menu's signature). Builds
+  pass `blast_sdk=` and `flow_sdk=` from the same PhysX checkout; `NvBlast*.dll`, `nvflow.dll`
+  and `nvflowext.dll` ship beside the binary. `PhysXDestructible3D`, `PhysXBlastAuthoring`,
+  `PhysXFlow3D` and `PhysXFlowEmitter3D` are functional on Vulkan and D3D12.
+
 ## v4.8-beta-plus.2 — 2026-11-01
 
 Upstream base: unchanged, `cafc17a192`.
