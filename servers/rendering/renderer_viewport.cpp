@@ -172,14 +172,6 @@ void RendererViewport::_configure_3d_render_buffers(Viewport *p_viewport) {
 			RenderingServerEnums::ViewportMSAA msaa_3d = p_viewport->msaa_3d;
 
 #ifdef RD_ENABLED
-			if (scaling_3d_mode == RSE::VIEWPORT_SCALING_3D_MODE_DLSS && OS::get_singleton()->get_current_rendering_driver_name() != "vulkan") {
-				// The Streamline D3D12 path crashes in the GPU driver on the first frame; until that is
-				// fixed DLSS is offered on Vulkan only and other drivers get the equivalent FSR 2 mode.
-				scaling_3d_mode = RSE::VIEWPORT_SCALING_3D_MODE_FSR2;
-				scaling_type = RSE::scaling_3d_mode_type(scaling_3d_mode);
-				WARN_PRINT_ONCE("DLSS is only available with the Vulkan rendering driver in this build. Falling back to FSR 2 scaling.");
-			}
-
 			if (scaling_3d_mode == RSE::VIEWPORT_SCALING_3D_MODE_METALFX_TEMPORAL && !RD::get_singleton()->has_feature(RD::SUPPORTS_METALFX_TEMPORAL)) {
 				if (RD::get_singleton()->has_feature(RD::SUPPORTS_METALFX_SPATIAL)) {
 					// Prefer MetalFX spatial if it is supported, which will be much more efficient than FSR2,

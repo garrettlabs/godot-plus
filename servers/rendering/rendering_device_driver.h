@@ -857,6 +857,10 @@ public:
 	/// Returns the underlying native command buffer handle (e.g. ID3D12GraphicsCommandList* or VkCommandBuffer).
 	virtual void *command_buffer_get_native_handle(CommandBufferID p_cmd_buffer) { return nullptr; }
 
+	/// Called after external code (a driver callback) has recorded its own commands into the native command buffer.
+	/// Drivers that cache bound state (pipeline, root signature, descriptor heaps) must forget it so the next command rebinds.
+	virtual void command_buffer_invalidate_cached_state(CommandBufferID p_cmd_buffer) {}
+
 	/********************/
 	/**** SUBMISSION ****/
 	/********************/
