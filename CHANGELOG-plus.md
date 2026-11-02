@@ -1,10 +1,40 @@
 # godot-plus releases
 
 Each entry names the upstream Godot commit the release is based on and the patches
-merged into `main` since the previous release. Version strings follow
-`4.8.beta.plus.N.<hash>` (built with `BUILD_NAME=N`); tags are `v4.8-beta-plus.N`. See README.md for the scheme.
+merged into `main` since the previous release. From v1.0.0 on, godot-plus carries its own
+semantic version: tags are `vMAJOR.MINOR.PATCH`, and the binary reports
+`<godot version>.plus.<version>.<hash>` (built with `BUILD_NAME=MAJOR.MINOR.PATCH`), so the
+upstream base stays visible in the string. The two earlier pre-releases used
+`v4.8-beta-plus.N`. See README.md for the scheme.
 
-## Unreleased
+## v1.0.0 — 2026-11-01
+
+Upstream base: `godotengine/godot` master `cafc17a192` (4.8-beta, 2026-10-27). Binaries report
+`4.8.beta.plus.1.0.0.<hash>`.
+
+First full release: everything from the two pre-releases plus the remaining PhysX backends.
+The complete set on `main`:
+
+- **streamline-dlss** — DLSS Super Resolution through NVIDIA Streamline 2.10 on Vulkan and
+  D3D12 (`4b29b932ef`, `412e813ebc`, `5f84207bc6`).
+- **contact-shadows-positional** — screen-space contact shadows for omni and spot lights
+  (`a066941c13`).
+- **physx5-module** — PhysX 5.10 `PhysicsServer3D` backend with GPU dynamics, vehicles, cloth,
+  fluids, water (`f64e8aafc7`, `674bbd0246`, `5782695977`), and new in this release, Blast
+  destruction and Flow gas built in (`ed658b07a8`): the Blast code had never compiled against
+  4.8 (missing physics-server include, and the `EditorContextMenuPlugin` rework of 78c4f8db69
+  changed the fracture menu's signature). Builds pass `blast_sdk=` and `flow_sdk=` from the
+  same PhysX checkout; `NvBlast*.dll`, `nvflow.dll` and `nvflowext.dll` ship beside the
+  binary. `PhysXDestructible3D`, `PhysXBlastAuthoring`, `PhysXFlow3D` and
+  `PhysXFlowEmitter3D` are functional on Vulkan and D3D12.
+- **profiling-zones** — Tracy zones (`af05d99b53`); inactive in release builds.
+- **plus-versioning** — `module_config = ".plus"` (`aab53f9e10` and the dot fix).
+
+Package: `godot-plus-v1.0.0-win64.zip` — editor, console launcher, runtime DLLs
+(`D3D12Core.dll`, `d3d12SDKLayers.dll`, `PhysXGpu_64.dll`, `NvBlast.dll`, `NvBlastGlobals.dll`,
+`NvBlastExtAuthoring.dll`, `NvBlastExtShaders.dll`, `nvflow.dll`, `nvflowext.dll`,
+`sl.interposer.dll`, `sl.common.dll`, `sl.dlss.dll`, `nvngx_dlss.dll`), `template_release` and
+`template_debug` for Windows x86-64, and a README.
 
 - **physx5-module** — Blast destruction and Flow gas are now built in (`ed658b07a8`): the
   Blast code had never compiled against 4.8 (missing physics-server include, and the

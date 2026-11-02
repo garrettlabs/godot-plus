@@ -15,7 +15,7 @@ Upstream's own README follows below under *Godot Engine*.
 |---|---|---|
 | **DLSS Super Resolution** via NVIDIA Streamline 2.10, on Vulkan and D3D12 | `drivers/streamline/`, `servers/rendering/renderer_rd/effects/dlss.*`, `Viewport.SCALING_3D_MODE_DLSS` | Ported from [NVIDIA-RTX/godot](https://github.com/NVIDIA-RTX/godot) (the DLSS subset only: no path tracer, no Ray Reconstruction). Needs the Streamline runtime DLLs beside the binary and an RTX GPU; otherwise the mode reports unavailable and FSR 2 remains. Project settings under `rendering/streamline/`. (Release v4.8-beta-plus.1 offered DLSS on Vulkan only; `main` since `5f84207bc6` runs it on both drivers.) |
 | **Screen-space contact shadows for omni and spot lights** | `renderer_rd/effects/ss_effects.*`, `light_storage.*`, `scene_forward_lights_inc.glsl` | Upstream traces them for directional lights only. `rendering/lights_and_shadows/contact_shadow/max_positional_lights` (default 4) caps the per-frame passes; the nearest lights that allow them get a layer. |
-| **PhysX 5.10 physics backend** (`physics/3d/physics_engine = "PhysX"`) with GPU rigid-body dynamics, vehicles, cloth, fluids, water, Flow gas, Blast destruction and a traced GI | `modules/godot_physx/` | Wild Ox Studios' module from [uno1982/godot](https://github.com/uno1982/godot), imported verbatim and ported to 4.8. The PhysX SDK is built out of tree (see Building). Jolt remains the default physics engine; GPU dynamics (`physics/physx_3d/simulation/gpu_dynamics`) pays off with thousands of dynamic bodies and costs a little otherwise. Flow and Blast are built in since `ed658b07a8` (releases from v4.8-beta-plus.3 on). |
+| **PhysX 5.10 physics backend** (`physics/3d/physics_engine = "PhysX"`) with GPU rigid-body dynamics, vehicles, cloth, fluids, water, Flow gas, Blast destruction and a traced GI | `modules/godot_physx/` | Wild Ox Studios' module from [uno1982/godot](https://github.com/uno1982/godot), imported verbatim and ported to 4.8. The PhysX SDK is built out of tree (see Building). Jolt remains the default physics engine; GPU dynamics (`physics/physx_3d/simulation/gpu_dynamics`) pays off with thousands of dynamic bodies and costs a little otherwise. Flow and Blast are built in since `ed658b07a8` (releases from v1.0.0 on). |
 | **Profiling zones** for animation, skeletons, scene tree and the 3D render path | `scene/animation`, `scene/3d`, `scene/main`, `servers/rendering` | Active in `profiler=tracy` builds only. A Tracy capture can then attribute a frame to shadow culling, draw submission, animation and script instead of one opaque zone. |
 
 Everything else is upstream Godot 4.8-beta at the commit `master` points to.
@@ -70,14 +70,18 @@ beside the binaries; ship all of them with the executable. A build with
 A release is a build of `main`: editor, console launcher, the runtime DLLs and the two
 export templates, all from one commit, packaged as a zip on GitHub Releases.
 
-- **Version string:** Godot's own scheme carries it. `version.py` sets
-  `module_config = ".plus"` and the build runs with `BUILD_NAME=N` (just the release
-  number), so the editor reports `4.8.beta.plus.N.<hash>` and looks for export templates
-  in `export_templates/4.8.beta.plus/`, apart from stock 4.8 templates.
-- **Release tag:** `v4.8-beta-plus.N` on `main`, where `4.8-beta` is the upstream version
-  the release is based on and `N` counts releases on that base, starting at 1. When the
-  base moves (for example to `4.8-stable`), `N` restarts at 1. The short hash in the
-  version string identifies the exact commit.
+- **Release version:** godot-plus has its own semantic version, `MAJOR.MINOR.PATCH`,
+  independent of the Godot version it is built on. MAJOR changes when the Godot base moves
+  to a new minor series or a patch is removed, MINOR when a feature is added or the base
+  moves within the series, PATCH for fixes only. The first full release is `v1.0.0`; the two
+  `v4.8-beta-plus.N` tags before it were pre-releases.
+- **Version string:** Godot's own scheme carries both numbers. `version.py` sets
+  `module_config = ".plus"` and the build runs with `BUILD_NAME=MAJOR.MINOR.PATCH`, so the
+  editor reports `4.8.beta.plus.1.0.0.<hash>` (upstream version, then the godot-plus version,
+  then the commit) and looks for export templates in `export_templates/4.8.beta.plus/`, apart
+  from stock 4.8 templates.
+- **Release tag:** `vMAJOR.MINOR.PATCH` on `main`. The changelog names the upstream base
+  commit of each release.
 - **Package name:** `godot-plus-<tag>-win64.zip`, with a README.txt listing its files and
   how to install the templates.
 - **Changelog:** `CHANGELOG-plus.md` lists, per release, the upstream base commit and the
