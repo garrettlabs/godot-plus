@@ -6189,6 +6189,21 @@ void *RenderingDeviceDriverD3D12::command_buffer_get_native_handle(CommandBuffer
 	return cmd_buf_info->cmd_list.Get();
 }
 
+void RenderingDeviceDriverD3D12::command_buffer_invalidate_cached_state(CommandBufferID p_cmd_buffer) {
+	// External code (e.g. Streamline's slEvaluateFeature) sets its own pipeline state, root signatures and
+	// descriptor heaps on the command list and does not restore ours. Forget what we believe is bound so the
+	// next bind command re-sets everything instead of binding descriptor tables against a foreign root signature.
+	CommandBufferInfo *cmd_buf_info = (CommandBufferInfo *)p_cmd_buffer.id;
+	cmd_buf_info->graphics_pso = nullptr;
+	cmd_buf_info->graphics_root_signature_crc = 0;
+	cmd_buf_info->compute_pso = nullptr;
+	cmd_buf_info->compute_root_signature_crc = 0;
+	cmd_buf_info->nir_graphics_runtime_data_root_param_idx = UINT32_MAX;
+	cmd_buf_info->nir_compute_runtime_data_root_param_idx = UINT32_MAX;
+	cmd_buf_info->pending_dyn_params = true;
+	cmd_buf_info->descriptor_heaps_set = false;
+}
+
 RenderingDeviceDriverD3D12::~RenderingDeviceDriverD3D12() {
 	rtv_descriptor_heap_pool.free(null_rtv_alloc);
 
