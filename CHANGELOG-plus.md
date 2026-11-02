@@ -4,13 +4,17 @@ Each entry names the upstream Godot commit the release is based on and the patch
 merged into `main` since the previous release. Version strings follow
 `4.8.beta.plus.N.<hash>` (built with `BUILD_NAME=N`); tags are `v4.8-beta-plus.N`. See README.md for the scheme.
 
-## Unreleased
+## v4.8-beta-plus.2 — 2026-11-01
+
+Upstream base: unchanged, `cafc17a192`.
 
 - **streamline-dlss** — DLSS now runs on the D3D12 driver as well (`5f84207bc6`). The crash
   was the D3D12 driver reusing cached pipeline, root-signature and descriptor-heap state after
   Streamline had rebound its own on the native command list; `RenderingDeviceDriver` gained
   `command_buffer_invalidate_cached_state`, called by the render graph after every driver
   callback. The Vulkan-only fallback from v4.8-beta-plus.1 is removed.
+
+Package: `godot-plus-v4.8-beta-plus.2-win64.zip`, same contents as the first release.
 
 ## v4.8-beta-plus.1 — 2026-11-01
 
