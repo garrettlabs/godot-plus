@@ -731,6 +731,8 @@ public:
 constexpr PxReal ONE_SIDED_DEEP_PENETRATION = 0.05f;
 constexpr PxReal ONE_SIDED_MOVING_OUT = 0.5f; // cos of the angle between motion and push-out
 constexpr PxU32 ONE_SIDED_MAX_TRIANGLES = 64;
+// A sweep that starts this close to a surface (as a fraction of the motion margin) is touching it, not inside it.
+constexpr PxReal TOUCHING_DEPTH_FACTOR = 0.1f;
 
 bool is_one_sided_trimesh(const PxRigidActor *p_actor, const PxShape *p_shape) {
 	if (!p_actor || !p_shape || p_shape->getGeometry().getType() != PxGeometryType::eTRIANGLEMESH) {
@@ -826,11 +828,22 @@ enum RoundContact {
 // and how far the round shape is in (<= 0: only touching). PhysX's own result
 // for a sweep that starts overlapping a mesh isn't that contact -- its depth is
 // the push along whichever axis it picked (32 cm back along the walk for a
-// 3.5 cm lip between two floor pieces) and its position can be a vertex a metre
-// away -- so a walking character was snapped sideways by tens of centimetres.
+// 3.5 cm lip between two floor pieces) and its position can be a vertex a meter
+// away -- so a walking character was snapped sideways by tens of centimeters.
 RoundContact round_mesh_contact(const PxGeometry &p_geom, const PxTransform &p_pose, const PxVec3 &p_a, const PxVec3 &p_b, PxReal p_radius,
-		const PxShape *p_mesh_shape, const PxTransform &p_mesh_pose, PxVec3 &r_normal, PxReal &r_depth, PxVec3 &r_point) {
+		const PxShape *p_mesh_shape, const PxTransform &p_mesh_pose, PxVec3 &r_normal, PxReal &r_depth, PxVec3 &r_point, const PxVec3 *p_oppose_dir = nullptr) {
 	const PxGeometry &mesh = p_mesh_shape->getGeometry();
+	// With a motion direction given, only features whose contact normal opposes it count (a floor the shape
+	// stands on is not what stops a sideways sweep, even when it is the nearest thing).
+	const Vector3 oppose = p_oppose_dir ? to_godot(*p_oppose_dir) : Vector3();
+	auto opposes = [&](const Vector3 &p_core, const Vector3 &p_tri) -> bool {
+		if (!p_oppose_dir) {
+			return true;
+		}
+		const Vector3 n = p_core - p_tri;
+		const real_t l = n.length();
+		return l < (real_t)1e-6 || n.dot(-oppose) / l >= (real_t)0.001;
+	};
 	PxU32 tris[ROUND_CONTACT_MAX_TRIANGLES];
 	bool overflow = false;
 	PxU32 count = 0;
@@ -864,7 +877,7 @@ RoundContact round_mesh_contact(const PxGeometry &p_geom, const PxTransform &p_p
 		for (const Vector3 &end : ends) {
 			const Vector3 on_tri = face.get_closest_point_to(end);
 			const real_t d = end.distance_squared_to(on_tri);
-			if (d < best) {
+			if (d < best && opposes(end, on_tri)) {
 				best = d;
 				best_core = end;
 				best_tri = on_tri;
@@ -875,12 +888,15 @@ RoundContact round_mesh_contact(const PxGeometry &p_geom, const PxTransform &p_p
 			Vector3 on_edge;
 			Geometry3D::get_closest_points_between_segments(a, b, face.vertex[e], face.vertex[(e + 1) % 3], on_core, on_edge);
 			const real_t d = on_core.distance_squared_to(on_edge);
-			if (d < best) {
+			if (d < best && opposes(on_core, on_edge)) {
 				best = d;
 				best_core = on_core;
 				best_tri = on_edge;
 			}
 		}
+	}
+	if (best == Math::INF) {
+		return ROUND_CONTACT_NONE;
 	}
 	const real_t dist = Math::sqrt(best);
 	if (dist < (real_t)1e-4) {
@@ -937,7 +953,7 @@ bool GodotPhysXSpace3D::test_body_motion(GodotPhysXBody3D *p_body, const PS3DT::
 
 	// Each pass applies half of the summed push-outs (a full push ping-pongs between the two faces of a crack;
 	// Godot Physics uses 0.4) and runs until nothing overlaps: four passes at 0.4 left 13% of the depth behind,
-	// which a crowd pressing a body into a wall turned into centimetres (issue #6).
+	// which a crowd pressing a body into a wall turned into centimeters (issue #6).
 	bool recovered_clear = false; // the last recovery pass found nothing overlapping
 	for (int iter = 0; iter < 8; iter++) {
 		PxVec3 iter_recover(0.0f);
@@ -1096,15 +1112,15 @@ bool GodotPhysXSpace3D::test_body_motion(GodotPhysXBody3D *p_body, const PS3DT::
 					const PxGeometryType::Enum mover_type = sg.geom.any().getType();
 					if (hit.block.actor && hit.block.shape && (mover_type == PxGeometryType::eCAPSULE || mover_type == PxGeometryType::eSPHERE) &&
 							(hit.block.shape->getGeometry().getType() == PxGeometryType::eTRIANGLEMESH || hit.block.shape->getGeometry().getType() == PxGeometryType::eHEIGHTFIELD)) {
-						const PxVec3 centre = pose.p + unit_dir * PxMax(hit.block.distance, 0.0f);
-						PxVec3 a = centre;
+						const PxVec3 center = pose.p + unit_dir * PxMax(hit.block.distance, 0.0f);
+						PxVec3 a = center;
 						PxVec3 ab(0.0f);
 						PxReal radius;
 						if (mover_type == PxGeometryType::eCAPSULE) {
 							// PhysX capsules lie along their local X axis.
 							const PxCapsuleGeometry &capsule = static_cast<const PxCapsuleGeometry &>(sg.geom.any());
 							const PxVec3 half = pose.q.getBasisVector0() * capsule.halfHeight;
-							a = centre - half;
+							a = center - half;
 							ab = half * 2.0f;
 							radius = capsule.radius;
 						} else {
@@ -1127,12 +1143,36 @@ bool GodotPhysXSpace3D::test_body_motion(GodotPhysXBody3D *p_body, const PS3DT::
 								hit.block.position = point;
 							}
 						} else {
-							const PxReal len2 = ab.magnitudeSquared();
-							const PxReal s = len2 > 1e-8f ? PxClamp((hit.block.position - a).dot(ab) / len2, 0.0f, 1.0f) : 0.0f;
-							const PxVec3 to_core = a + ab * s - hit.block.position;
-							const PxReal dist = to_core.magnitude();
-							if (dist > 1e-4f) {
-								hit.block.normal = to_core / dist;
+							// The normal comes from the mesh's closest feature to the core at the hit pose, among
+							// the features that oppose the motion (the shape inflated by the margin so a tangent
+							// contact is found). The point PhysX reports for a capsule's sweep can lie on a
+							// triangle's edge while the capsule is tangent to the face: a capsule touching a
+							// wall's chamfer got the corner's normal, 1.5 degrees off, the slide along it ran into
+							// the face, and move_and_slide's second-wall rule froze the body for good (issue #10).
+							const PxTransform hit_pose(center, pose.q);
+							const PxTransform mesh_pose = hit.block.actor->getGlobalPose() * hit.block.shape->getLocalPose();
+							PxVec3 normal;
+							PxReal depth;
+							PxVec3 point;
+							RoundContact contact = ROUND_CONTACT_NONE;
+							if (mover_type == PxGeometryType::eCAPSULE) {
+								const PxCapsuleGeometry inflated(radius + margin, static_cast<const PxCapsuleGeometry &>(sg.geom.any()).halfHeight);
+								contact = round_mesh_contact(inflated, hit_pose, a, a + ab, radius, hit.block.shape, mesh_pose, normal, depth, point, &unit_dir);
+							} else {
+								const PxSphereGeometry inflated(radius + margin);
+								contact = round_mesh_contact(inflated, hit_pose, a, a, radius, hit.block.shape, mesh_pose, normal, depth, point, &unit_dir);
+							}
+							if (contact == ROUND_CONTACT_FOUND) {
+								hit.block.normal = normal;
+								hit.block.position = point;
+							} else {
+								const PxReal len2 = ab.magnitudeSquared();
+								const PxReal s = len2 > 1e-8f ? PxClamp((hit.block.position - a).dot(ab) / len2, 0.0f, 1.0f) : 0.0f;
+								const PxVec3 to_core = a + ab * s - hit.block.position;
+								const PxReal dist = to_core.magnitude();
+								if (dist > 1e-4f) {
+									hit.block.normal = to_core / dist;
+								}
 							}
 						}
 					} else if (hit.block.actor && hit.block.shape && hit.block.faceIndex != 0xffffffffu &&
@@ -1159,6 +1199,20 @@ bool GodotPhysXSpace3D::test_body_motion(GodotPhysXBody3D *p_body, const PS3DT::
 						blind_sweep = true;
 						const PxF32 pen = -hit.block.distance;
 						if (skip_one_sided_overlap(hit.block.actor, hit.block.shape, -1.0f, hit.block.normal, motion_dir, sg.geom.any(), pose)) {
+							continue;
+						}
+						// Touching, not inside: PhysX reports a start within its tolerance of a surface as an
+						// overlap of zero depth (a body resting on a floor, one standing against a wall). There
+						// is nothing to push out of. It blocks the motion only when the motion goes into it
+						// (fraction 0; move_and_slide slides the rest along it), and a motion along or away from
+						// it is clear: a body is not blocked by the floor it rests on (issue #9). The sweep is
+						// still blind past it, so the destination check below guards what lies ahead.
+						if (pen <= margin * TOUCHING_DEPTH_FACTOR) {
+							if (hit.block.normal.dot(-unit_dir) >= 0.001f && safe_fraction > (real_t)0.0) {
+								safe_fraction = 0.0;
+								best_hit = hit.block;
+								has_hit = true;
+							}
 							continue;
 						}
 						mtd_recover += hit.block.normal * (pen + margin);
@@ -1273,7 +1327,8 @@ bool GodotPhysXSpace3D::test_body_motion(GodotPhysXBody3D *p_body, const PS3DT::
 			PxVec3 hit_point(0.0f);
 			// Recovery that ended clear means nothing overlaps at the start (the MTD push-out only moves away).
 			const PxF32 allowed = (recovered_clear && !blind_sweep ? 0.0f : max_penetration(start_pose, hit_dir, hit_actor, hit_shape, hit_point)) + margin;
-			if (max_penetration(pose_at(safe_fraction), hit_dir, hit_actor, hit_shape, hit_point) > allowed && hit_actor) {
+			const PxF32 end_pen = max_penetration(pose_at(safe_fraction), hit_dir, hit_actor, hit_shape, hit_point);
+			if (end_pen > allowed && hit_actor) {
 				real_t lo = 0.0;
 				real_t hi = safe_fraction;
 				for (int step = 0; step < 8; step++) {
