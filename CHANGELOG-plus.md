@@ -7,6 +7,17 @@ semantic version: tags are `vMAJOR.MINOR.PATCH`, and the binary reports
 upstream base stays visible in the string. The two earlier pre-releases used
 `v4.8-beta-plus.N`. See README.md for the scheme.
 
+## v1.0.2 — 2026-11-02
+
+Upstream base: unchanged, `cafc17a192`. Hotfix release; same package layout as v1.0.0.
+
+- **physx5-module** — two body-motion fixes from the issue tracker (`ebb3ff9776`): a sweep that starts
+  touching a surface (within a tenth of the margin) blocks only a motion going into it, so
+  `test_move` along the floor a body rests on is clear again (#9, a 1.0.1 regression); a capsule
+  or sphere hitting a mesh takes its contact normal from the mesh's closest opposing feature at the
+  hit pose instead of PhysX's reported hit point, so a capsule standing against a wall's chamfer
+  slides along it instead of freezing for good (#10, present since 1.0.0).
+
 ## v1.0.1 — 2026-11-02
 
 Upstream base: unchanged, `cafc17a192`. Hotfix release; same package layout as v1.0.0.
