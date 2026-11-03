@@ -935,7 +935,11 @@ bool GodotPhysXSpace3D::test_body_motion(GodotPhysXBody3D *p_body, const PS3DT::
 	const PxRigidActor *rec_actor = nullptr;
 	const PxShape *rec_shape = nullptr;
 
-	for (int iter = 0; iter < 4; iter++) {
+	// Each pass applies half of the summed push-outs (a full push ping-pongs between the two faces of a crack;
+	// Godot Physics uses 0.4) and runs until nothing overlaps: four passes at 0.4 left 13% of the depth behind,
+	// which a crowd pressing a body into a wall turned into centimetres (issue #6).
+	bool recovered_clear = false; // the last recovery pass found nothing overlapping
+	for (int iter = 0; iter < 8; iter++) {
 		PxVec3 iter_recover(0.0f);
 		bool any = false;
 		for (int i = 0; i < shape_count; i++) {
@@ -994,9 +998,10 @@ bool GodotPhysXSpace3D::test_body_motion(GodotPhysXBody3D *p_body, const PS3DT::
 			}
 		}
 		if (!any) {
+			recovered_clear = true;
 			break;
 		}
-		recover += iter_recover * 0.4f;
+		recover += iter_recover * 0.5f;
 	}
 
 	const PxVec3 recover_motion = recover;
@@ -1022,11 +1027,15 @@ bool GodotPhysXSpace3D::test_body_motion(GodotPhysXBody3D *p_body, const PS3DT::
 		bool resweep = false;
 		PxSweepHit resting_hit;
 		bool resting = false;
+		// Whether the (last) sweep pass started overlapping something: PhysX then reports that overlap as the one
+		// blocking hit and nothing else of that shape, so the result is checked at the destination below.
+		bool blind_sweep = false;
 		for (int pass = 0; pass < 2; pass++) {
 			if (pass == 1) {
 				if (!resweep) {
 					break;
 				}
+				blind_sweep = false;
 				// The first sweep's floor, if it found nothing it was stopped by.
 				resting = has_hit && safe_fraction == (real_t)1.0;
 				resting_hit = best_hit;
@@ -1147,6 +1156,7 @@ bool GodotPhysXSpace3D::test_body_motion(GodotPhysXBody3D *p_body, const PS3DT::
 					// travel. This is the only depenetration path for tri-mesh /
 					// height-field terrain (computePenetration() rejects those).
 					if (hit.block.distance <= 0.0f) {
+						blind_sweep = true;
 						const PxF32 pen = -hit.block.distance;
 						if (skip_one_sided_overlap(hit.block.actor, hit.block.shape, -1.0f, hit.block.normal, motion_dir, sg.geom.any(), pose)) {
 							continue;
@@ -1207,6 +1217,90 @@ bool GodotPhysXSpace3D::test_body_motion(GodotPhysXBody3D *p_body, const PS3DT::
 		if (!has_hit && resting) {
 			best_hit = resting_hit;
 			has_hit = true;
+		}
+
+		// --- Destination check (issue #6) -----------------------------------------
+		// A blocking sweep whose shape starts overlapping a mesh (a wall it slides along,
+		// a floor it stands on) reports only that overlap and never the other triangles
+		// of the same mesh ahead, so a capsule sliding along one wall of a T-junction
+		// walked straight into the other and stayed inside it. When the sweep was blind
+		// like that, test the pose the body would end at: if it overlaps anything deeper
+		// than it did at the start, bisect the fraction down to where it no longer does
+		// and report that contact so move_and_slide slides along it.
+		if (safe_fraction > (real_t)0.0) {
+			const PxTransform start_pose = PxTransform(mtd_recover) * recovered_from;
+			auto max_penetration = [&](const PxTransform &p_body_pose, PxVec3 &r_dir, const PxRigidActor *&r_actor, const PxShape *&r_shape, PxVec3 &r_point) -> PxF32 {
+				PxF32 deepest = 0.0f;
+				for (int i = 0; i < shape_count; i++) {
+					const GodotPhysXBody3D::ShapeRef *sr = p_body->get_shape_ref(i);
+					if (!sr || sr->disabled || !sr->shape || !sr->shape->is_valid() || sr->shape->is_separation_ray()) {
+						continue;
+					}
+					const GodotPhysXShape3D::ScaledGeometry sg = sr->shape->scaled_geometry(motion_scale * sr->xform.basis.get_scale());
+					const PxTransform pose = p_body_pose * to_px(sr->xform) * sg.local_pose;
+					PxOverlapHit touches[32];
+					PxOverlapBuffer buf(touches, 32);
+					PxQueryFilterData ofd(fd.flags | PxQueryFlag::eNO_BLOCK);
+					px_scene->overlap(sg.geom.any(), pose, buf, ofd, &filter);
+					for (PxU32 t = 0; t < buf.getNbTouches(); t++) {
+						const PxOverlapHit &h = buf.getTouch(t);
+						PxVec3 dir;
+						PxF32 depth;
+						const PxTransform other_pose = h.actor->getGlobalPose() * h.shape->getLocalPose();
+						if (!PxGeometryQuery::computePenetration(dir, depth, sg.geom.any(), pose, h.shape->getGeometry(), other_pose)) {
+							continue;
+						}
+						if (skip_one_sided_overlap(h.actor, h.shape, depth, dir, motion_dir, sg.geom.any(), pose)) {
+							continue;
+						}
+						if (depth > deepest) {
+							deepest = depth;
+							r_dir = dir;
+							r_actor = h.actor;
+							r_shape = h.shape;
+							r_point = pose.p - dir * depth;
+						}
+					}
+				}
+				return deepest;
+			};
+			auto pose_at = [&](real_t p_fraction) {
+				return PxTransform(unit_dir * (PxReal)(motion_len * p_fraction)) * start_pose;
+			};
+			PxVec3 hit_dir(0.0f);
+			const PxRigidActor *hit_actor = nullptr;
+			const PxShape *hit_shape = nullptr;
+			PxVec3 hit_point(0.0f);
+			// Recovery that ended clear means nothing overlaps at the start (the MTD push-out only moves away).
+			const PxF32 allowed = (recovered_clear && !blind_sweep ? 0.0f : max_penetration(start_pose, hit_dir, hit_actor, hit_shape, hit_point)) + margin;
+			if (max_penetration(pose_at(safe_fraction), hit_dir, hit_actor, hit_shape, hit_point) > allowed && hit_actor) {
+				real_t lo = 0.0;
+				real_t hi = safe_fraction;
+				for (int step = 0; step < 8; step++) {
+					const real_t mid = (lo + hi) * 0.5;
+					PxVec3 d(0.0f);
+					const PxRigidActor *a = nullptr;
+					const PxShape *sh = nullptr;
+					PxVec3 pt(0.0f);
+					if (max_penetration(pose_at(mid), d, a, sh, pt) > allowed && a) {
+						hi = mid;
+						hit_dir = d;
+						hit_actor = a;
+						hit_shape = sh;
+						hit_point = pt;
+					} else {
+						lo = mid;
+					}
+				}
+				safe_fraction = lo;
+				best_hit = PxSweepHit();
+				best_hit.actor = const_cast<PxRigidActor *>(hit_actor);
+				best_hit.shape = const_cast<PxShape *>(hit_shape);
+				best_hit.normal = hit_dir;
+				best_hit.position = hit_point;
+				best_hit.distance = (PxReal)(motion_len * safe_fraction);
+				has_hit = true;
+			}
 		}
 	}
 
