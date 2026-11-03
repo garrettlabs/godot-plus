@@ -7,6 +7,13 @@ semantic version: tags are `vMAJOR.MINOR.PATCH`, and the binary reports
 upstream base stays visible in the string. The two earlier pre-releases used
 `v4.8-beta-plus.N`. See README.md for the scheme.
 
+## Unreleased
+
+- **physx5-module** — four PhysX query and motion fixes from the issue tracker: body motion
+  honours only the mover's `collision_mask` (#8); a ray starting on a mesh face keeps the face
+  normal (#4); `cast_motion` brackets the hit so the unsafe pose touches (#5); the closest-point
+  query resolves Area3D RIDs, which `AudioStreamPlayer3D` passes for reverb areas (#2).
+
 ## v1.0.0 — 2026-11-01
 
 Upstream base: `godotengine/godot` master `cafc17a192` (4.8-beta, 2026-10-27). Binaries report
