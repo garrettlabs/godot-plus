@@ -703,9 +703,10 @@ public:
 		if (exclude_objects && exclude_objects->has(b->get_instance_id())) {
 			return PxQueryHitType::eNONE;
 		}
-		// Same collision-layer/mask rule as regular contacts: hit only if
-		// either side's mask matches the other's layer.
-		const bool collide = (self_layer & b->get_collision_mask()) || (b->get_collision_layer() & self_mask);
+		// Body motion is one-way (Godot's contract, Jolt and GodotPhysics alike): only the moving body's mask
+		// decides what stops it. The solver keeps the two-way contact rule, so a body that scans the mover is
+		// still pushed by it (issue #8).
+		const bool collide = (b->get_collision_layer() & self_mask) != 0;
 		if (!collide) {
 			return PxQueryHitType::eNONE;
 		}
