@@ -11,10 +11,13 @@ upstream base stays visible in the string. The two earlier pre-releases used
 
 Upstream base: unchanged, `cafc17a192`. Hotfix release; same package layout as v1.0.0.
 
-- **physx5-module** — four PhysX query and motion fixes from the issue tracker (`83859c577f`): body motion
+- **physx5-module** — six PhysX fixes from the issue tracker (`83859c577f`, `2161cc8373`): body motion
   honours only the mover's `collision_mask` (#8); a ray starting on a mesh face keeps the face
   normal (#4); `cast_motion` brackets the hit so the unsafe pose touches (#5); the closest-point
-  query resolves Area3D RIDs, which `AudioStreamPlayer3D` passes for reverb areas (#2).
+  query resolves Area3D RIDs, which `AudioStreamPlayer3D` passes for reverb areas (#2); body motion
+  no longer ends inside a concave wall's T-junction (the sweep result is checked at the destination
+  and recovery runs to completion) (#6); the last `PXTGI3D` leaving frees the GI effect's pipelines,
+  buffers and every viewport's targets (#3).
 
 ## v1.0.0 — 2026-11-01
 
