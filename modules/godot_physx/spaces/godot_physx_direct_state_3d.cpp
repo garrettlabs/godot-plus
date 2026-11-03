@@ -494,8 +494,14 @@ bool GodotPhysXDirectSpaceState3D::intersect_ray(const PS3DT::RayParameters &p_p
 	const PxRaycastHit &b = hit.block;
 	const QueryHitObject o = hit_object(b.actor, b.shape);
 	r_result.position = to_godot(b.position);
-	// Started inside (hit_from_inside): Godot reports a zero normal there.
-	r_result.normal = b.distance <= 0.0f ? Vector3() : to_godot(b.normal);
+	// Started inside a solid (hit_from_inside): Godot reports a zero normal there. Triangle meshes and height
+	// fields have no inside -- a ray starting exactly on a face keeps the face normal (issue #4).
+	bool started_inside = false;
+	if (b.distance <= 0.0f && b.shape) {
+		const PxGeometryType::Enum gt = b.shape->getGeometry().getType();
+		started_inside = gt != PxGeometryType::eTRIANGLEMESH && gt != PxGeometryType::eHEIGHTFIELD;
+	}
+	r_result.normal = started_inside ? Vector3() : to_godot(b.normal);
 	r_result.rid = o.rid;
 	r_result.collider_id = o.instance_id;
 	r_result.collider = r_result.collider_id.is_valid() ? ObjectDB::get_instance(r_result.collider_id) : nullptr;
@@ -609,9 +615,19 @@ bool GodotPhysXDirectSpaceState3D::cast_motion(const PS3DT::ShapeParameters &p_p
 		return true;
 	}
 
-	const real_t frac = CLAMP((real_t)hit.block.distance / motion_len, (real_t)0.0, (real_t)1.0);
-	p_closest_safe = frac;
-	p_closest_unsafe = frac;
+	// Godot's contract: the unsafe fraction is where the shape collides (get_rest_info there finds the body),
+	// the safe fraction sits a little short of it. PhysX reports the touching distance, where the shapes only
+	// touch and an overlap query finds nothing, so bracket it by a small epsilon (issue #5). A shape already
+	// overlapping at the start reports distance 0: both fractions are 0.
+	const real_t dist = (real_t)hit.block.distance;
+	if (dist <= (real_t)0.0) {
+		p_closest_safe = 0.0;
+		p_closest_unsafe = 0.0;
+	} else {
+		const real_t eps = (real_t)0.001;
+		p_closest_safe = CLAMP((dist - eps) / motion_len, (real_t)0.0, (real_t)1.0);
+		p_closest_unsafe = CLAMP((dist + eps) / motion_len, (real_t)0.0, (real_t)1.0);
+	}
 	if (r_info) {
 		const QueryHitObject o = hit_object(hit.block.actor, hit.block.shape);
 		r_info->point = to_godot(hit.block.position);
@@ -701,9 +717,16 @@ bool GodotPhysXDirectSpaceState3D::rest_info(const PS3DT::ShapeParameters &p_par
 Vector3 GodotPhysXDirectSpaceState3D::get_closest_point_to_object_volume(RID p_object, const Vector3 p_point) const {
 	GodotPhysXServer3D *server = GodotPhysXServer3D::get_singleton();
 	ERR_FAIL_NULL_V(server, p_point);
-	GodotPhysXBody3D *body = server->get_body(p_object);
-	ERR_FAIL_NULL_V(body, p_point);
-	PxRigidActor *actor = body->get_px_actor();
+	// AudioStreamPlayer3D passes the RID of each reverb Area3D it overlaps (issue #2); resolve areas as well as
+	// bodies, the way Jolt does.
+	PxRigidActor *actor = nullptr;
+	if (GodotPhysXArea3D *area = server->get_area(p_object)) {
+		actor = area->get_px_actor();
+	} else {
+		GodotPhysXBody3D *body = server->get_body(p_object);
+		ERR_FAIL_NULL_V(body, p_point);
+		actor = body->get_px_actor();
+	}
 	ERR_FAIL_NULL_V(actor, p_point);
 
 	real_t best_dist_sq = 1e30;
