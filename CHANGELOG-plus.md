@@ -7,9 +7,11 @@ semantic version: tags are `vMAJOR.MINOR.PATCH`, and the binary reports
 upstream base stays visible in the string. The two earlier pre-releases used
 `v4.8-beta-plus.N`. See README.md for the scheme.
 
-## Unreleased
+## v1.0.1 — 2026-11-02
 
-- **physx5-module** — four PhysX query and motion fixes from the issue tracker: body motion
+Upstream base: unchanged, `cafc17a192`. Hotfix release; same package layout as v1.0.0.
+
+- **physx5-module** — four PhysX query and motion fixes from the issue tracker (`83859c577f`): body motion
   honours only the mover's `collision_mask` (#8); a ray starting on a mesh face keeps the face
   normal (#4); `cast_motion` brackets the hit so the unsafe pose touches (#5); the closest-point
   query resolves Area3D RIDs, which `AudioStreamPlayer3D` passes for reverb areas (#2).
