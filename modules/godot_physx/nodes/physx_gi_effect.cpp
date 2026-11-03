@@ -54,6 +54,8 @@ Mutex PhysXGIEffect::mutex;
 std::atomic<int> PhysXGIEffect::settle{ 0 };
 HashMap<ObjectID, PhysXGIEffect::Snapshot> PhysXGIEffect::settings;
 HashMap<ObjectID, int> PhysXGIEffect::worlds;
+Mutex PhysXGIView::live_mutex;
+HashSet<PhysXGIView *> PhysXGIView::live_views;
 
 namespace {
 
@@ -2096,6 +2098,20 @@ void PhysXGIEffect::detach_world(const ObjectID &p_world) {
 	}
 	worlds.erase(p_world);
 	PhysXCompositorEffects::uninstall(p_world, get_shared());
+	if (worlds.is_empty()) {
+		release_gpu_resources();
+	}
+}
+
+void PhysXGIEffect::release_gpu_resources() {
+	// The shaders, pipelines, samplers and cache buffers live in the shared effect (about 10 MB of cache alone) and
+	// each viewport's view holds 19 render targets (about 40 MB at 1080p); neither went away with the last node
+	// before. The views are freed on the render thread, where they were made; the effect frees its own in its
+	// destructor, also on the render thread.
+	godot_physx_run_on_render_thread([]() {
+		PhysXGIView::free_all_live();
+	});
+	free_shared();
 }
 
 void PhysXGIEffect::install(World3D *p_world, Camera3D *p_camera) {
@@ -2201,7 +2217,24 @@ bool PhysXGIEffect::_ensure(RenderingDevice *p_rd) {
 	return true;
 }
 
+void PhysXGIView::free_all_live() {
+	LocalVector<PhysXGIView *> views;
+	{
+		MutexLock lock(live_mutex);
+		for (PhysXGIView *v : live_views) {
+			views.push_back(v);
+		}
+	}
+	for (PhysXGIView *v : views) {
+		v->free_data();
+	}
+}
+
 void PhysXGIView::free_data() {
+	{
+		MutexLock lock(live_mutex);
+		live_views.erase(this);
+	}
 	RenderingDevice *rd = RenderingDevice::get_singleton();
 	if (rd == nullptr) {
 		return;
@@ -2221,6 +2254,10 @@ void PhysXGIView::ensure(RenderingDevice *p_rd, const Size2i &p_frame) {
 		return;
 	}
 	free_data();
+	{
+		MutexLock lock(live_mutex);
+		live_views.insert(this);
+	}
 	targets_for = p_frame;
 	trace_size = Size2i(MAX(p_frame.x / 4, 1), MAX(p_frame.y / 4, 1));
 	RD::TextureFormat tf;

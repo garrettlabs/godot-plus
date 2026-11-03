@@ -34,6 +34,7 @@
 #include "core/math/transform_3d.h"
 #include "core/os/mutex.h"
 #include "core/templates/hash_map.h"
+#include "core/templates/hash_set.h"
 #include "scene/resources/compositor.h"
 #include "servers/rendering/renderer_rd/storage_rd/render_buffer_custom_data_rd.h"
 #include "servers/rendering/rendering_device.h"
@@ -73,6 +74,12 @@ public:
 	void configure(RenderSceneBuffersRD *p_render_buffers) override {}
 	void free_data() override;
 	~PhysXGIView() { free_data(); }
+
+	// Every view that holds targets, so the last PXTGI3D leaving can free them (issue #3): a viewport keeps its view
+	// until it is resized or freed, which for the main viewport is the end of the session.
+	static Mutex live_mutex;
+	static HashSet<PhysXGIView *> live_views;
+	static void free_all_live();
 };
 
 // PXTGI's GPU side, computed before the opaque pass (PRE_OPAQUE) and written into Godot's per-pixel GI buffer, which
@@ -223,6 +230,8 @@ public:
 
 	static Ref<PhysXGIEffect> get_shared();
 	static void free_shared();
+	// Drops the shared pipelines, buffers and every viewport's targets once no node is attached to any world.
+	static void release_gpu_resources();
 
 	PhysXGIEffect();
 	~PhysXGIEffect();
