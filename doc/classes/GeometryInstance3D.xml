@@ -50,6 +50,9 @@
 			The global illumination mode to use for the whole geometry. To avoid inconsistent results, use a mode that matches the purpose of the mesh during gameplay (static/dynamic).
 			[b]Note:[/b] Lights' bake mode will also affect the global illumination rendering. See [member Light3D.light_bake_mode].
 		</member>
+		<member name="static_shadow_caster" type="bool" setter="set_static_shadow_caster" getter="is_static_shadow_caster" default="false">
+			If [code]true[/code], this instance's shadow is cached for each [OmniLight3D] and [SpotLight3D] whose range it is in: the light draws it into its shadow map only when the light or a static caster changes, and redraws only the other casters when something moves nearby. Set it on geometry that never moves, deforms or changes its mesh or materials (walls, floors, fixed props); a static caster that does move still updates the lights it is paired with, at the cost of a full redraw. Takes effect with the Forward+ renderer, for spot lights and omni lights in [constant OmniLight3D.SHADOW_DUAL_PARABOLOID] mode, while [member ProjectSettings.rendering/lights_and_shadows/positional_shadow/static_shadow_cache] is on.
+		</member>
 		<member name="ignore_occlusion_culling" type="bool" setter="set_ignore_occlusion_culling" getter="is_ignoring_occlusion_culling" default="false">
 			If [code]true[/code], disables occlusion culling for this instance. Useful for gizmos that must be rendered even when occlusion culling is in use.
 			[b]Note:[/b] [member ignore_occlusion_culling] does not affect frustum culling (which is what happens when an object is not visible given the camera's angle). To avoid frustum culling, set [member custom_aabb] to a very large AABB that covers your entire game world such as [code]AABB(-10000, -10000, -10000, 20000, 20000, 20000)[/code].

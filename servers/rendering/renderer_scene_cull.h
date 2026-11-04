@@ -422,6 +422,7 @@ public:
 		float lod_bias;
 
 		bool ignore_occlusion_culling;
+		bool static_shadow_caster = false; // RSE::INSTANCE_FLAG_STATIC_SHADOW_CASTER: never moves, its shadow depth is cached per light
 		bool ignore_all_culling;
 
 		Vector<RID> materials;
@@ -708,6 +709,13 @@ public:
 		uint32_t max_sdfgi_cascade = 2;
 		uint32_t cull_mask = 0xFFFFFFFF;
 
+		// Static shadow caching: the version of this light's static casters (the light moved or changed, a static caster
+		// paired, unpaired, moved or changed). The shadow atlas remembers which version its cached static depth holds; a
+		// mismatch redraws the static pass. static_caster_count says whether caching is worth a copy at all.
+		uint64_t static_version = 1;
+		uint32_t static_caster_count = 0;
+		void make_static_shadow_dirty() { static_version++; }
+
 	private:
 		// Instead of a single dirty flag, we maintain a count
 		// so that we can detect lights that are being made dirty
@@ -885,6 +893,8 @@ public:
 
 	PagedArray<Instance *> instance_cull_result;
 	PagedArray<Instance *> instance_shadow_cull_result;
+	PagedArray<Instance *> instance_shadow_cull_static_result; // the static casters split out of a light's cull (static shadow caching)
+	bool static_shadow_cache_enabled = true; // rendering/lights_and_shadows/positional_shadow/static_shadow_cache
 
 	struct InstanceCullResult {
 		PagedArray<RenderGeometryInstance *> geometry_instances;
@@ -1085,6 +1095,7 @@ public:
 	void _light_instance_setup_directional_shadow(int p_shadow_index, Instance *p_instance, const Transform3D p_cam_transform, const Projection &p_cam_projection, bool p_cam_orthogonal, bool p_cam_vaspect);
 
 	_FORCE_INLINE_ bool _light_instance_update_shadow(Instance *p_instance, const Transform3D p_cam_transform, const Projection &p_cam_projection, bool p_cam_orthogonal, bool p_cam_vaspect, RID p_shadow_atlas, Scenario *p_scenario, float p_screen_mesh_lod_threshold, uint32_t p_visible_layers = 0xFFFFFF);
+	void _light_instance_emit_shadow_passes(Instance *p_instance, InstanceLightData *p_light, uint32_t p_visible_layers, int p_pass, bool p_use_static_cache, bool p_static_stale, bool &r_animated_material_found);
 
 	RID _render_get_environment(RID p_camera, RID p_scenario);
 	RID _render_get_compositor(RID p_camera, RID p_scenario);

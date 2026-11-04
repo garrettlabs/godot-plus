@@ -208,6 +208,10 @@ public:
 	virtual void shadow_atlas_set_size(RID p_atlas, int p_size, bool p_use_16_bits = true) = 0;
 	virtual void shadow_atlas_set_quadrant_subdivision(RID p_atlas, int p_quadrant, int p_subdivision) = 0;
 	virtual bool shadow_atlas_update_light(RID p_atlas, RID p_light_instance, float p_coverage, uint64_t p_light_version) = 0;
+	// Static shadow caching: whether the light's atlas slot holds the static casters of version p_static_version, and
+	// recording that it does once the static pass was drawn. A storage without the cache answers false.
+	virtual bool shadow_atlas_light_static_cache_valid(RID p_atlas, RID p_light_instance, uint64_t p_static_version) { return false; }
+	virtual void shadow_atlas_light_static_cache_set(RID p_atlas, RID p_light_instance, uint64_t p_static_version) {}
 
 	virtual void shadow_atlas_update(RID p_atlas) = 0;
 

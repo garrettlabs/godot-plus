@@ -411,6 +411,7 @@ private:
 			struct Shadow {
 				RID owner;
 				uint64_t version = 0;
+				uint64_t static_version = 0; // the light's static-caster version held by the static copy, 0 = none
 				uint64_t fog_version = 0; // used for fog
 				uint64_t alloc_tick = 0;
 
@@ -430,6 +431,9 @@ private:
 
 		RID depth;
 		RID fb; //for copying
+		// Static shadow caching: the same layout again, holding each slot's static casters only.
+		RID static_depth;
+		RID static_fb;
 
 		HashMap<RID, uint32_t> shadow_owners;
 	};
@@ -1128,6 +1132,8 @@ public:
 	virtual void shadow_atlas_set_size(RID p_atlas, int p_size, bool p_16_bits = true) override;
 	virtual void shadow_atlas_set_quadrant_subdivision(RID p_atlas, int p_quadrant, int p_subdivision) override;
 	virtual bool shadow_atlas_update_light(RID p_atlas, RID p_light_instance, float p_coverage, uint64_t p_light_version) override;
+	virtual bool shadow_atlas_light_static_cache_valid(RID p_atlas, RID p_light_instance, uint64_t p_static_version) override;
+	virtual void shadow_atlas_light_static_cache_set(RID p_atlas, RID p_light_instance, uint64_t p_static_version) override;
 	_FORCE_INLINE_ bool shadow_atlas_owns_light_instance(RID p_atlas, RID p_light_instance) {
 		ShadowAtlas *atlas = shadow_atlas_owner.get_or_null(p_atlas);
 		ERR_FAIL_NULL_V(atlas, false);
@@ -1169,6 +1175,16 @@ public:
 		ShadowAtlas *atlas = shadow_atlas_owner.get_or_null(p_atlas);
 		ERR_FAIL_NULL_V(atlas, RID());
 		return atlas->fb;
+	}
+	_FORCE_INLINE_ RID shadow_atlas_get_static_texture(RID p_atlas) {
+		ShadowAtlas *atlas = shadow_atlas_owner.get_or_null(p_atlas);
+		ERR_FAIL_NULL_V(atlas, RID());
+		return atlas->static_depth;
+	}
+	_FORCE_INLINE_ RID shadow_atlas_get_static_fb(RID p_atlas) {
+		ShadowAtlas *atlas = shadow_atlas_owner.get_or_null(p_atlas);
+		ERR_FAIL_NULL_V(atlas, RID());
+		return atlas->static_fb;
 	}
 
 	virtual void shadow_atlas_update(RID p_atlas) override;

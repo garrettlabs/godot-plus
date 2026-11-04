@@ -1465,7 +1465,9 @@ RDD::TextureID RenderingDeviceDriverD3D12::texture_create(const TextureFormat &p
 	if ((p_format.usage_bits & TEXTURE_USAGE_COLOR_ATTACHMENT_BIT)) {
 		resource_desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
 	} else {
-		if ((p_format.usage_bits & TEXTURE_USAGE_CAN_COPY_TO_BIT) && _unordered_access_supported_by_format(p_format.format)) {
+		// A depth-stencil texture clears through its DSV, and D3D12 refuses ALLOW_UNORDERED_ACCESS beside
+		// ALLOW_DEPTH_STENCIL (E_INVALIDARG at CreateResource), so a copyable depth texture gets no UAV flag.
+		if ((p_format.usage_bits & TEXTURE_USAGE_CAN_COPY_TO_BIT) && !(p_format.usage_bits & TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) && _unordered_access_supported_by_format(p_format.format)) {
 			resource_desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS; // For clearing via UAV.
 		}
 	}
