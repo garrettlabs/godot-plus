@@ -7,6 +7,22 @@ semantic version: tags are `vMAJOR.MINOR.PATCH`, and the binary reports
 upstream base stays visible in the string. The two earlier pre-releases used
 `v4.8-beta-plus.N`. See README.md for the scheme.
 
+## v1.1.0 — 2026-11-03
+
+Upstream base: unchanged, `cafc17a192`. A feature release; same package layout as v1.0.0.
+
+- **static-shadow-cache** (`0825aab083`, `a03896ba40`) — static shadow caching for omni and spot lights.
+  `GeometryInstance3D.static_shadow_caster` (off by default; `RenderingServer.INSTANCE_FLAG_STATIC_SHADOW_CASTER`)
+  marks geometry that never moves; each spot light and dual-paraboloid omni light keeps those casters'
+  depth in a second shadow atlas texture and, when something moves in its range, copies that slot
+  back and redraws only the other casters. The light, a static caster or the atlas slot changing
+  redraws the static set. `rendering/lights_and_shadows/positional_shadow/static_shadow_cache`
+  (default on) switches it off. Cube-mode omni lights, area lights and the Mobile renderer keep
+  the full redraw. Measured on a test level with 60 shadowed lamps and 150 animated characters at
+  1080p: shadow draw calls per frame 5,740 → 745, frame 9.4 → 6.6 ms (Vulkan) and 9.5 → 7.5 ms
+  (D3D12), GPU time unchanged. The D3D12 driver no longer asks for a UAV on a copyable depth
+  texture, which D3D12 refuses beside the depth-stencil flag.
+
 ## v1.0.3 — 2026-11-03
 
 Upstream base: unchanged, `cafc17a192`. Hotfix release; same package layout as v1.0.0.
