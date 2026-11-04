@@ -50,13 +50,21 @@ from `misc/scripts/install_d3d12_sdk_windows.py`, AccessKit from
   from the [Streamline SDK 2.10.x release](https://github.com/NVIDIA-RTX/Streamline/releases)
   (`bin/x64/`), copied next to the built binary. The headers are in `thirdparty/streamline`.
 
-Then, from the repo root (PowerShell; Git Bash makes the build look for MinGW):
+Then, from the repo root (PowerShell; Git Bash makes the build look for MinGW), with
+`use_llvm=yes` on every target:
 
 ```
-scons platform=windows target=editor           physx_sdk=<sdk>/install/vc17win64-godot-gpu/PhysX physx_gpu=yes blast_sdk=<checkout>/blast/_build/windows-x86_64/release/blast-sdk flow_sdk=<checkout>/flow
-scons platform=windows target=template_release physx_sdk=<sdk>/install/vc17win64-godot-gpu/PhysX physx_gpu=yes blast_sdk=<checkout>/blast/_build/windows-x86_64/release/blast-sdk flow_sdk=<checkout>/flow
-scons platform=windows target=template_debug   physx_sdk=<sdk>/install/vc17win64-godot-gpu/PhysX physx_gpu=yes blast_sdk=<checkout>/blast/_build/windows-x86_64/release/blast-sdk flow_sdk=<checkout>/flow
+scons platform=windows target=editor           use_llvm=yes physx_sdk=<sdk>/install/vc17win64-godot-gpu/PhysX physx_gpu=yes blast_sdk=<checkout>/blast/_build/windows-x86_64/release/blast-sdk flow_sdk=<checkout>/flow
+scons platform=windows target=template_release use_llvm=yes physx_sdk=<sdk>/install/vc17win64-godot-gpu/PhysX physx_gpu=yes blast_sdk=<checkout>/blast/_build/windows-x86_64/release/blast-sdk flow_sdk=<checkout>/flow
+scons platform=windows target=template_debug   use_llvm=yes physx_sdk=<sdk>/install/vc17win64-godot-gpu/PhysX physx_gpu=yes blast_sdk=<checkout>/blast/_build/windows-x86_64/release/blast-sdk flow_sdk=<checkout>/flow
 ```
+
+`use_llvm=yes` compiles with clang-cl (the "C++ Clang tools for Windows" component of VS 2022,
+`VC\Tools\Llvmdin` on PATH) and names the output `*.llvm.exe`. MSVC builds the
+`DEBUG_ENABLED` GDScript interpreter 5 to 6 times slower than Clang does (a typed loop of 2M
+iterations: 250 ms against 49; the release template, without `DEBUG_ENABLED`, is unaffected
+either way), so an MSVC editor or debug template runs scripts far slower than the official
+Godot binaries, which are Clang-built too (issue #13). Releases from v1.0.3 are clang-cl builds.
 
 `physx_sdk=` is required on every build or the PhysX module is silently skipped; without
 `blast_sdk=` / `flow_sdk=` the destruction and gas nodes are compiled out. The build copies

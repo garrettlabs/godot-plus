@@ -7,6 +7,23 @@ semantic version: tags are `vMAJOR.MINOR.PATCH`, and the binary reports
 upstream base stays visible in the string. The two earlier pre-releases used
 `v4.8-beta-plus.N`. See README.md for the scheme.
 
+## v1.0.3 — 2026-11-03
+
+Upstream base: unchanged, `cafc17a192`. Hotfix release; same package layout as v1.0.0.
+
+- **Built with clang-cl** (`use_llvm=yes`, all three targets). The MSVC editor and debug template
+  ran GDScript 1.3 to 6 times slower than the official binaries: MSVC compiles the `DEBUG_ENABLED`
+  interpreter loop badly (#13). The Clang editor runs the issue's micro benchmark within 20% of
+  official 4.7.2; release templates were unaffected and stay the same speed.
+- **physx5-module** (`0400c5123d`) — with `physics/3d/run_on_separate_thread`, a direct-state
+  query from another thread outside the sync window, or while the space steps, is refused with
+  "Space state is inaccessible right now" as Godot Physics and Jolt do, instead of racing PhysX's
+  `fetchResults` and crashing in the scene-query tree (#14); `PhysXBlastAuthoring.fracture_mesh_arrays`
+  fractures from surface arrays and an image with no RenderingServer call, so a worker thread runs
+  at full speed and a main-thread wait on it no longer deadlocks (#12).
+- **nav-async-sync** (`542843b5f1`) — a navigation map whose async iterations are switched off while
+  a build is in flight collects that build and keeps syncing (#11; also an upstream bug).
+
 ## v1.0.2 — 2026-11-02
 
 Upstream base: unchanged, `cafc17a192`. Hotfix release; same package layout as v1.0.0.
