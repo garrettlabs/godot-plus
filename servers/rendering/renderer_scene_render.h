@@ -276,13 +276,24 @@ public:
 	virtual RID voxel_gi_instance_create(RID p_voxel_gi) = 0;
 	virtual void voxel_gi_instance_set_transform_to_data(RID p_probe, const Transform3D &p_xform) = 0;
 	virtual bool voxel_gi_needs_update(RID p_probe) const = 0;
+	// Whether this renderer draws RenderShadowData::PASS_STATIC and PASS_DYNAMIC_OVER_STATIC passes.
+	virtual bool static_shadow_cache_supported() const { return false; }
 	virtual void voxel_gi_update(RID p_probe, bool p_update_light_instances, const Vector<RID> &p_light_instances, const PagedArray<RenderGeometryInstance *> &p_dynamic_objects) = 0;
 
 	virtual void voxel_gi_set_quality(RSE::VoxelGIQuality) = 0;
 
 	struct RenderShadowData {
+		// Static shadow caching: a dirty positional light whose static casters are cached in the shadow atlas draws its
+		// static casters only when that cache is stale (PASS_STATIC, into the atlas's static copy) and its dynamic
+		// casters every time, over the cached static depth copied into the slot (PASS_DYNAMIC_OVER_STATIC).
+		enum PassMode {
+			PASS_FULL,
+			PASS_STATIC,
+			PASS_DYNAMIC_OVER_STATIC,
+		};
 		RID light;
 		int pass = 0;
+		PassMode mode = PASS_FULL;
 		PagedArray<RenderGeometryInstance *> instances;
 	};
 

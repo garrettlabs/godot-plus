@@ -3209,6 +3209,9 @@
 		<member name="rendering/lights_and_shadows/positional_shadow/atlas_16_bits" type="bool" setter="" getter="" default="true">
 			Use 16 bits for the omni/spot shadow depth map. Enabling this results in shadows having less precision and may result in shadow acne, but can lead to performance improvements on some devices.
 		</member>
+		<member name="rendering/lights_and_shadows/positional_shadow/static_shadow_cache" type="bool" setter="" getter="" default="true">
+			If [code]true[/code], omni and spot lights keep a cached shadow map of their casters marked [member GeometryInstance3D.static_shadow_caster] and redraw only the other casters when something moves in their range (Forward+ only; spot lights and dual-paraboloid omni lights). The shadow atlas keeps a second depth texture of its size for the cache. Turn off to compare against full redraws.
+		</member>
 		<member name="rendering/lights_and_shadows/positional_shadow/atlas_quadrant_0_subdiv" type="int" setter="" getter="" default="2">
 			The subdivision amount of the first quadrant on the shadow atlas. See the [url=$DOCS_URL/tutorials/3d/lights_and_shadows.html#shadow-atlas]documentation[/url] for more information.
 		</member>
