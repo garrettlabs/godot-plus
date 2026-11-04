@@ -385,7 +385,9 @@ void NavMap2D::sync() {
 	if (iteration_dirty && !iteration_building && !iteration_ready) {
 		_build_iteration();
 	}
-	if (use_async_iterations && iteration_build_thread_task_id != WorkerThreadPool::INVALID_TASK_ID) {
+	// A finished async build is collected whatever use_async_iterations says now: when the flag went false
+	// while a build was in flight, nothing else clears iteration_building, and the map never syncs again.
+	if (iteration_build_thread_task_id != WorkerThreadPool::INVALID_TASK_ID) {
 		if (WorkerThreadPool::get_singleton()->is_task_completed(iteration_build_thread_task_id)) {
 			WorkerThreadPool::get_singleton()->wait_for_task_completion(iteration_build_thread_task_id);
 
