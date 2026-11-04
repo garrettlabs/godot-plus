@@ -92,7 +92,8 @@ GodotPhysXServer3D *GodotPhysXServer3D::singleton = nullptr;
 		return; \
 	}
 
-GodotPhysXServer3D::GodotPhysXServer3D() {
+GodotPhysXServer3D::GodotPhysXServer3D(bool p_on_separate_thread) :
+		on_separate_thread(p_on_separate_thread) {
 	singleton = this;
 }
 
@@ -241,6 +242,10 @@ real_t GodotPhysXServer3D::space_get_param(RID p_space, PS3DE::SpaceParameter p_
 PhysicsDirectSpaceState3D *GodotPhysXServer3D::space_get_direct_state(RID p_space) {
 	GodotPhysXSpace3D *space = space_owner.get_or_null(p_space);
 	ERR_FAIL_NULL_V(space, nullptr);
+	// The same rule as Godot Physics and Jolt. With physics on its own thread a query from the main thread
+	// outside sync()..end_sync() runs while PhysX simulates and fetches results, which PhysX forbids: it
+	// corrupted the scene-query trees and the next actor removal crashed inside them (issue #14).
+	ERR_FAIL_COND_V_MSG((on_separate_thread && !syncing) || space->is_stepping(), nullptr, "Space state is inaccessible right now, wait for iteration or physics process notification.");
 	return space->get_direct_state();
 }
 
@@ -762,6 +767,7 @@ void GodotPhysXServer3D::body_set_force_integration_callback(RID p_body, const C
 PhysicsDirectBodyState3D *GodotPhysXServer3D::body_get_direct_state(RID p_body) {
 	GodotPhysXBody3D *body = body_owner.get_or_null(p_body);
 	ERR_FAIL_NULL_V(body, nullptr);
+	ERR_FAIL_COND_V_MSG(on_separate_thread && !syncing, nullptr, "Body state is inaccessible right now, wait for iteration or physics process notification.");
 	return body->get_direct_state();
 }
 

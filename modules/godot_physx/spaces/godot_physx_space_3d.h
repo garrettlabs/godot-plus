@@ -57,6 +57,7 @@ class GodotPhysXSpace3D {
 	RID self;
 	physx::PxPhysics *px_physics = nullptr;
 	physx::PxScene *px_scene = nullptr;
+	bool stepping = false; // inside step(): PhysX is simulating, the scene may not be queried or changed
 	physx::PxCudaContextManager *px_cuda = nullptr; // null unless a GPU build with a usable CUDA device
 	physx::PxMaterial *default_material = nullptr;
 	GodotPhysXDirectSpaceState3D *direct_state = nullptr;
@@ -216,6 +217,7 @@ public:
 	void body_shape_gone(GodotPhysXBody3D *p_body, int p_shape);
 
 	void step(real_t p_step);
+	bool is_stepping() const { return stepping; }
 	void call_queries();
 
 	bool test_body_motion(GodotPhysXBody3D *p_body, const PS3DT::MotionParameters &p_params, PS3DT::MotionResult *r_result);

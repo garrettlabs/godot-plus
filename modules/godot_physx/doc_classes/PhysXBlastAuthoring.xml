@@ -24,6 +24,17 @@
 				Note the mesh is authored as-is: a source [MeshInstance3D]'s node transform (including scale) is not baked in.
 			</description>
 		</method>
+		<method name="fracture_mesh_arrays">
+			<return type="PhysXBlastAsset" />
+			<param index="0" name="surface_arrays" type="Array" />
+			<param index="1" name="site_count" type="int" />
+			<param index="2" name="seed" type="int" />
+			<param index="3" name="pattern" type="int" default="0" />
+			<param index="4" name="cutout_image" type="Image" default="null" />
+			<description>
+				The same fracture as [method fracture_mesh], from a surface's arrays ([method Mesh.surface_get_arrays] of a triangle-list surface) and, for [constant PATTERN_CUTOUT], the pattern as an [Image]. It makes no [RenderingServer] call, so it runs at full speed on a [WorkerThreadPool] task; [method fracture_mesh] reads the mesh and the texture, which are server round trips that a worker thread waits a frame for, then calls this. Read the arrays and image on the main thread, hand them to the worker. One [PhysXBlastAuthoring] serves one thread at a time: [method get_last_error] and [method get_last_warnings] are shared state.
+			</description>
+		</method>
 		<method name="get_last_error" qualifiers="const">
 			<return type="String" />
 			<description>
