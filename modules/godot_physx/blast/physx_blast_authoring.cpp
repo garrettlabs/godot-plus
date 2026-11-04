@@ -281,6 +281,7 @@ bool is_closed(const LocalVector<uint32_t> &p_indices) {
 
 void PhysXBlastAuthoring::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("fracture_mesh", "mesh", "site_count", "seed", "pattern", "cutout_pattern"), &PhysXBlastAuthoring::fracture_mesh, DEFVAL(PATTERN_VORONOI), DEFVAL(Ref<Texture2D>()));
+	ClassDB::bind_method(D_METHOD("fracture_mesh_arrays", "surface_arrays", "site_count", "seed", "pattern", "cutout_image"), &PhysXBlastAuthoring::fracture_mesh_arrays, DEFVAL(PATTERN_VORONOI), DEFVAL(Ref<Image>()));
 
 	ClassDB::bind_method(D_METHOD("get_last_error"), &PhysXBlastAuthoring::get_last_error);
 	ClassDB::bind_method(D_METHOD("get_last_warnings"), &PhysXBlastAuthoring::get_last_warnings);
@@ -312,15 +313,32 @@ Ref<PhysXBlastAsset> PhysXBlastAuthoring::fracture_mesh(const Ref<Mesh> &p_mesh,
 	if (p_mesh.is_null() || p_mesh->get_surface_count() < 1) {
 		return _fail("PhysXBlastAuthoring: mesh is null or has no surfaces.");
 	}
+	if (p_mesh->surface_get_primitive_type(0) != Mesh::PRIMITIVE_TRIANGLES) {
+		return _fail("PhysXBlastAuthoring: the mesh's first surface isn't a triangle list.");
+	}
+	// The two reads below go through the RenderingServer. From any thread but the main one they wait
+	// for the main thread to pump the server's queue, one frame per call, and a main thread that is
+	// itself waiting on that thread never pumps (issue #12). A worker fractures through
+	// fracture_mesh_arrays() with data read here on the main thread.
+	const Array arrays = p_mesh->surface_get_arrays(0);
+	Ref<Image> cutout;
+	if (p_cutout_pattern.is_valid()) {
+		cutout = p_cutout_pattern->get_image();
+	}
+	return fracture_mesh_arrays(arrays, p_site_count, p_seed, p_pattern, cutout);
+}
+
+Ref<PhysXBlastAsset> PhysXBlastAuthoring::fracture_mesh_arrays(const Array &p_surface_arrays, int p_site_count, int p_seed, FracturePattern p_pattern, const Ref<Image> &p_cutout_image) {
+	last_error = String();
+	last_warnings.clear();
 	PxPhysics *physics = GodotPhysXServer3D::get_singleton() ? GodotPhysXServer3D::get_singleton()->get_px_physics() : nullptr;
 	if (!physics) {
 		return _fail("PhysXBlastAuthoring: PhysX not initialized.");
 	}
-
-	if (p_mesh->surface_get_primitive_type(0) != Mesh::PRIMITIVE_TRIANGLES) {
-		return _fail("PhysXBlastAuthoring: the mesh's first surface isn't a triangle list.");
+	if (p_surface_arrays.size() != Mesh::ARRAY_MAX) {
+		return _fail("PhysXBlastAuthoring: surface arrays must be the Mesh.ARRAY_MAX entries Mesh.surface_get_arrays returns.");
 	}
-	const Array arrays = p_mesh->surface_get_arrays(0);
+	const Array arrays = p_surface_arrays;
 	const PackedVector3Array verts = arrays[Mesh::ARRAY_VERTEX];
 	if (verts.size() < 4) {
 		return _fail("PhysXBlastAuthoring: mesh has too few vertices.");
@@ -476,11 +494,12 @@ Ref<PhysXBlastAsset> PhysXBlastAuthoring::fracture_mesh(const Ref<Mesh> &p_mesh,
 		// -- same as Unreal's own Blast integration, the caller supplies a
 		// grayscale bitmap (see this class's header for why) and
 		// NvBlastExtAuthoringBuildCutoutSet segments it into per-region loops.
-		if (p_cutout_pattern.is_null()) {
-			_error("PhysXBlastAuthoring: PATTERN_CUTOUT requires a cutout_pattern texture.");
+		if (p_cutout_image.is_null()) {
+			_error("PhysXBlastAuthoring: PATTERN_CUTOUT requires a cutout_pattern texture (or a cutout image).");
 			frac_result = -1;
 		} else {
-			Ref<Image> pattern_img = p_cutout_pattern->get_image();
+			// A copy: the pattern is decompressed in place below, and the caller keeps its image.
+			Ref<Image> pattern_img = p_cutout_image->duplicate();
 			if (pattern_img.is_null() || pattern_img->is_empty()) {
 				_error("PhysXBlastAuthoring: cutout_pattern texture has no image data.");
 				frac_result = -1;

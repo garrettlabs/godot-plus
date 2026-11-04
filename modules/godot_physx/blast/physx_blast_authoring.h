@@ -34,6 +34,7 @@
 
 #include "core/object/ref_counted.h"
 
+class Image;
 class Mesh;
 class Texture2D;
 
@@ -102,6 +103,10 @@ public:
 	// with a null p_mesh). Returns a null Ref on failure (mesh has no
 	// surfaces, cooking failed, etc).
 	Ref<PhysXBlastAsset> fracture_mesh(const Ref<Mesh> &p_mesh, int p_site_count, int p_seed, FracturePattern p_pattern = PATTERN_VORONOI, const Ref<Texture2D> &p_cutout_pattern = Ref<Texture2D>());
+	// The same fracture from a surface's arrays (Mesh.surface_get_arrays) and the cutout as an Image: no
+	// RenderingServer call, so it runs at full speed on a WorkerThreadPool task. fracture_mesh() reads the
+	// mesh and texture (server round trips) and calls this.
+	Ref<PhysXBlastAsset> fracture_mesh_arrays(const Array &p_surface_arrays, int p_site_count, int p_seed, FracturePattern p_pattern = PATTERN_VORONOI, const Ref<Image> &p_cutout_image = Ref<Image>());
 
 	// Why the last fracture_mesh() failed (empty if it didn't), and what it warned about -- the same text it printed,
 	// for a UI to show (the fracture dialog does).

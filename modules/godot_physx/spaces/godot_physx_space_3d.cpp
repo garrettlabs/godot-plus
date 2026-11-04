@@ -408,8 +408,10 @@ void GodotPhysXSpace3D::step(real_t p_step) {
 	_detect_area_overlaps();
 
 	flush_material_releases(); // (see defer_material_release: removals reach this scene's sync below)
+	stepping = true;
 	px_scene->simulate((PxReal)p_step);
 	px_scene->fetchResults(true); // fills body contact buffers via g_contact_callback
+	stepping = false;
 
 	// Pull back actors that moved this step (eENABLE_ACTIVE_ACTORS), plus one
 	// final pull for bodies that just went to sleep so their resting pose and

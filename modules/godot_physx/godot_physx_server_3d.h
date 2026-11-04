@@ -109,6 +109,7 @@ class GodotPhysXServer3D : public PhysicsServer3DDummy {
 	// With physics/3d/run_on_separate_thread the server runs on its own thread; the main thread may touch the scenes
 	// only between sync() and end_sync(), while that thread is parked (physics process).
 	Thread::ID server_thread = Thread::MAIN_ID;
+	bool on_separate_thread = false;
 	bool syncing = false;
 	// Carries run_on_physics_thread()'s calls through PhysicsServer3DWrapMT's command queue (a body in no space).
 	RID dispatch_body;
@@ -416,6 +417,6 @@ public:
 	virtual bool is_flushing_queries() const override { return flushing_queries; }
 	virtual int get_process_info(PS3DE::ProcessInfo p_info) override;
 
-	GodotPhysXServer3D();
+	GodotPhysXServer3D(bool p_on_separate_thread = false);
 	virtual ~GodotPhysXServer3D() override;
 };

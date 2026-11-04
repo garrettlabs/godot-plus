@@ -95,7 +95,7 @@ static PhysicsServer3D *create_physx_physics_server() {
 	bool run_on_separate_thread = false;
 #endif
 
-	GodotPhysXServer3D *physics_server = memnew(GodotPhysXServer3D);
+	GodotPhysXServer3D *physics_server = memnew(GodotPhysXServer3D(run_on_separate_thread));
 
 	return memnew(PhysicsServer3DWrapMT(physics_server, run_on_separate_thread));
 }
