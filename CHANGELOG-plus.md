@@ -7,6 +7,33 @@ semantic version: tags are `vMAJOR.MINOR.PATCH`, and the binary reports
 upstream base stays visible in the string. The two earlier pre-releases used
 `v4.8-beta-plus.N`. See README.md for the scheme.
 
+## Unreleased (next: v1.2.0)
+
+Upstream base: unchanged, `cafc17a192`. Ray tracing in the Forward+ renderer, Vulkan only, off by default.
+
+- **rt-acceleration-structures** (`23adaf0e7c`, `080e5e99d7`) — ray tracing acceleration structures for
+  the 3D scene, behind `rendering/raytracing/enabled` (off by default, restart required; in effect with
+  Forward+ on a GPU with ray query support, which `RenderingServer.is_raytracing_enabled()` reports).
+  One BLAS per mesh surface, built on first use (compressed positions are used as BLAS input directly
+  where the GPU accepts them), refittable BLAS for skinned and blend shape surfaces, and one TLAS per
+  view and frame holding the instances in view plus those within
+  `rendering/raytracing/scene/max_distance` (100 m). New `RenderingDevice.blas_update()` (refit), TLAS
+  instances without a hit shader binding table range for ray queries, and Viewport render info for TLAS
+  instances, BLAS builds and refits. On a test level with 60 shadowed lamps and 150 animated characters
+  at 1080p the scene costs 0.47 ms of GPU time and about 190 MB of VRAM. Particles, 2D meshes and
+  non-triangle primitives are not part of it.
+
+- **rt-shadows** (`7608586d52`) — ray-traced shadows for omni and spot lights when ray tracing is in
+  effect (`rendering/raytracing/shadows/enabled`, default on): the nearest
+  `rendering/raytracing/shadows/max_positional_lights` (64) shadow-casting lights trace their shadows in
+  a compute pass after the depth pre-pass instead of rendering shadow maps, so they take no shadow atlas
+  space and cost no shadow draws. Lights with a size trace `soft_shadow_samples` (4) rays for soft
+  shadows. On the same test level: shadow draw calls 2,150 → 0 and frame 5.74 → 5.32 ms (Vulkan,
+  against shadow maps with the static shadow cache), the pass at 0.92 ms of GPU time. Directional
+  lights, reflection probes, multiview, D3D12 and GPUs without ray queries keep shadow maps.
+  Transparent surfaces receive no ray-traced shadows, light caster and cull masks are not applied, and
+  geometry a material displaces in its vertex shader casts its unmodified shape.
+
 ## v1.1.1 — 2026-11-04
 
 Upstream base: unchanged, `cafc17a192`. A fix release (issue #15 and the DLSS frame token with the separate render thread); same package layout as v1.0.0. Re-cut the same evening with the DLSS fix; the first v1.1.1 package (`81470f4a8f`) carried only the #15 fix.
@@ -64,7 +91,7 @@ Upstream base: unchanged, `cafc17a192`. Hotfix release; same package layout as v
 Upstream base: unchanged, `cafc17a192`. Hotfix release; same package layout as v1.0.0.
 
 - **physx5-module** — six PhysX fixes from the issue tracker (`83859c577f`, `2161cc8373`): body motion
-  honours only the mover's `collision_mask` (#8); a ray starting on a mesh face keeps the face
+  honors only the mover's `collision_mask` (#8); a ray starting on a mesh face keeps the face
   normal (#4); `cast_motion` brackets the hit so the unsafe pose touches (#5); the closest-point
   query resolves Area3D RIDs, which `AudioStreamPlayer3D` passes for reverb areas (#2); body motion
   no longer ends inside a concave wall's T-junction (the sweep result is checked at the destination
