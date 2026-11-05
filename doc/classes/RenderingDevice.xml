@@ -29,6 +29,15 @@
 				Builds the [param blas].
 			</description>
 		</method>
+		<method name="blas_update" experimental="">
+			<return type="int" enum="Error" />
+			<param index="0" name="blas" type="RID" />
+			<description>
+				Refits the [param blas] to the current contents of its vertex buffers, keeping the hierarchy of its last build. This is much faster than [method blas_build] and is meant for geometry that deforms every frame, such as skinned meshes. The topology (index buffer and vertex count) must not change between the build and the update. A BLAS that has not been built yet is built instead.
+				The [param blas] must have been created with [constant ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT]. Trace quality degrades as the geometry moves away from the shape it had at the last full build, so rebuild it from time to time.
+				[b]Note:[/b] Updating any BLAS after it was used in a TLAS build invalidates the TLAS and requires it to be rebuilt.
+			</description>
+		</method>
 		<method name="blas_create" experimental="">
 			<return type="RID" />
 			<param index="0" name="geometries" type="RDAccelerationStructureGeometry[]" />

@@ -1349,6 +1349,8 @@ private:
 		// --- Bottom Level ---
 		Vector<RDG::ResourceTracker *> draw_trackers;
 		HashSet<RID> untracked_buffers;
+		bool allow_update = false;
+		bool built = false;
 
 		// --- Top Level ---
 		uint32_t max_instance_count = 0;
@@ -1384,6 +1386,7 @@ public:
 
 	RID blas_create(Span<AccelerationStructureGeometry> p_geometries, BitField<AccelerationStructureFlagBits> p_flags);
 	RID tlas_create(uint32_t p_max_instance_count, BitField<AccelerationStructureFlagBits> p_flags);
+	bool acceleration_structure_vertex_format_is_supported(DataFormat p_format) const;
 
 	typedef int64_t HitShaderBindingTableRange;
 
@@ -1397,6 +1400,7 @@ public:
 	};
 
 	Error blas_build(RID p_blas);
+	Error blas_update(RID p_blas);
 	Error tlas_build(RID p_tlas, Span<AccelerationStructureInstance> p_instances);
 
 private:
