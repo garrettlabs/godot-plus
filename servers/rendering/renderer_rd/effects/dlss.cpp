@@ -56,6 +56,8 @@ public:
 	sl::DLSSOptions currentDlssOptions;
 	sl::DLSSOptimalSettings currentOptimalSettings;
 	sl::DLSSDOptions currentDlssDOptions; // DLSS Ray Reconstruction options
+	uint32_t last_frame_index = 0; // Frame index of the token this viewport last set its constants for.
+	bool has_last_frame_index = false;
 
 	DLSSContextInner();
 	virtual ~DLSSContextInner();
@@ -300,6 +302,19 @@ void DLSSEffect::_upscale_internal(RDD::CommandBufferID cmdid, const DLSSContext
 
 	void *nativeCmdlist = RD::get_singleton()->get_device_driver()->command_buffer_get_native_handle(cmdid);
 
+	// The frame token is advanced on the main thread once per iteration (STREAMLINE_MARKER_BEFORE_MESSAGE_LOOP). With a
+	// separate render thread this pass runs behind or ahead of that, so two frames of the same viewport can see one
+	// token, which Streamline refuses with eErrorDuplicatedConstants. Take a new token when the current one was already
+	// used for this viewport, and read it once so the constants and the evaluation go to the same frame.
+	StreamlineContext &sl_context = StreamlineContext::get();
+	if (sl_context.last_token == nullptr || (context->has_last_frame_index && uint32_t(*sl_context.last_token) == context->last_frame_index)) {
+		sl_context.get_new_frame_token();
+	}
+	sl::FrameToken *frame_token = sl_context.last_token;
+	ERR_FAIL_NULL(frame_token);
+	context->last_frame_index = uint32_t(*frame_token);
+	context->has_last_frame_index = true;
+
 	// Helper function for tagging resources.
 	auto assignResource = [context](sl::Resource *resources, sl::ResourceTag *resourceTags, int &numResources, RID textureRID, sl::BufferType bufferType, sl::ResourceLifecycle lifecycle) {
 		if (!textureRID.is_valid() || textureRID.is_null()) {
@@ -443,7 +458,7 @@ void DLSSEffect::_upscale_internal(RDD::CommandBufferID cmdid, const DLSSContext
 		context->constants.mvecScale = sl::float2(1.0f, 1.0f);
 		context->constants.orthographicProjection = sl::Boolean::eFalse;
 		context->constants.reset = p_params.reset_accumulation ? sl::Boolean::eTrue : sl::Boolean::eFalse;
-		sl::Result result = StreamlineContext::get().slSetConstants(context->constants, *StreamlineContext::get().last_token, context->viewport);
+		sl::Result result = StreamlineContext::get().slSetConstants(context->constants, *frame_token, context->viewport);
 		if (result != sl::Result::eOk) {
 			ERR_FAIL_MSG("Failed to call streamline slSetConstants. Result: " + String(StreamlineContext::result_to_string(result)));
 		}
@@ -515,13 +530,13 @@ void DLSSEffect::_upscale_internal(RDD::CommandBufferID cmdid, const DLSSContext
 
 		if (use_dlss_rr && StreamlineContext::get().streamline_capabilities.dlss_rr_available) {
 			// Use DLSS Ray Reconstruction
-			result = StreamlineContext::get().slEvaluateFeature(sl::kFeatureDLSS_RR, *StreamlineContext::get().last_token, inputs, 1, nativeCmdlist);
+			result = StreamlineContext::get().slEvaluateFeature(sl::kFeatureDLSS_RR, *frame_token, inputs, 1, nativeCmdlist);
 			if (result != sl::Result::eOk) {
 				ERR_FAIL_MSG("Failed to call streamline slEvaluateFeature for DLSS Ray Reconstruction. Result: " + String(StreamlineContext::result_to_string(result)));
 			}
 		} else if (StreamlineContext::get().streamline_capabilities.dlss_available) {
 			// Use regular DLSS
-			result = StreamlineContext::get().slEvaluateFeature(sl::kFeatureDLSS, *StreamlineContext::get().last_token, inputs, 1, nativeCmdlist);
+			result = StreamlineContext::get().slEvaluateFeature(sl::kFeatureDLSS, *frame_token, inputs, 1, nativeCmdlist);
 			if (result != sl::Result::eOk) {
 				ERR_FAIL_MSG("Failed to call streamline slEvaluateFeature for DLSS Super Resolution. Result: " + String(StreamlineContext::result_to_string(result)));
 			}
@@ -555,7 +570,7 @@ void DLSSEffect::_upscale_internal(RDD::CommandBufferID cmdid, const DLSSContext
 
 		{ // Evaluate NIS
 			const sl::BaseStructure *inputs[] = { &context->viewport };
-			sl::Result result = StreamlineContext::get().slEvaluateFeature(sl::kFeatureNIS, *StreamlineContext::get().last_token, inputs, 1, nativeCmdlist);
+			sl::Result result = StreamlineContext::get().slEvaluateFeature(sl::kFeatureNIS, *frame_token, inputs, 1, nativeCmdlist);
 			if (result != sl::Result::eOk) {
 				ERR_FAIL_MSG("Failed to call streamline slEvaluateFeature for NIS. Result: " + String(StreamlineContext::result_to_string(result)));
 			}
