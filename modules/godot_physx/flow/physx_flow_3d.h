@@ -94,6 +94,12 @@ private:
 	bool floor_enabled = false;
 	float floor_height = 0.0f;
 	RID query_shape;
+	// The solids the last physics step found in collider_region (_gather_colliders runs in
+	// NOTIFICATION_INTERNAL_PHYSICS_PROCESS: with physics/3d/run_on_separate_thread the space answers a
+	// query only inside the server's sync window, never from the idle frame). _step sets the region
+	// and appends the solids; a step old at most.
+	AABB collider_region;
+	LocalVector<FlowBackend::Emitter> cached_solids;
 
 	// Look.
 	float smoke_density = 4.0f; // per meter, per unit of smoke
