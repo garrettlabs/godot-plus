@@ -1042,6 +1042,8 @@ public:
 
 	virtual bool is_low_end() const = 0;
 
+	virtual bool is_raytracing_enabled() const = 0;
+
 	virtual void set_print_gpu_profile(bool p_enable) = 0;
 
 	virtual Size2i get_maximum_viewport_size() const = 0;

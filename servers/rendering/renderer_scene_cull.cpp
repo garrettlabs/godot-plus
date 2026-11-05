@@ -771,7 +771,7 @@ void RendererSceneCull::instance_set_base(RID p_instance, RID p_base) {
 				geom->geometry_instance->set_use_dynamic_gi(instance->dynamic_gi);
 				geom->geometry_instance->set_use_lightmap(RID(), instance->lightmap_uv_scale, instance->lightmap_slice_index);
 				geom->geometry_instance->set_instance_shader_uniforms_offset(instance->instance_uniforms.location());
-				geom->geometry_instance->set_cast_double_sided_shadows(instance->cast_shadows == RSE::SHADOW_CASTING_SETTING_DOUBLE_SIDED);
+				geom->geometry_instance->set_cast_shadows_setting(instance->cast_shadows);
 				if (instance->lightmap_sh.size() == 9) {
 					geom->geometry_instance->set_lightmap_capture(instance->lightmap_sh.ptr());
 				}
@@ -1375,7 +1375,7 @@ void RendererSceneCull::instance_geometry_set_cast_shadows_setting(RID p_instanc
 		InstanceGeometryData *geom = static_cast<InstanceGeometryData *>(instance->base_data);
 		ERR_FAIL_NULL(geom->geometry_instance);
 
-		geom->geometry_instance->set_cast_double_sided_shadows(instance->cast_shadows == RSE::SHADOW_CASTING_SETTING_DOUBLE_SIDED);
+		geom->geometry_instance->set_cast_shadows_setting(instance->cast_shadows);
 	}
 
 	_instance_queue_update(instance, false, true);
@@ -3282,6 +3282,18 @@ void RendererSceneCull::_scene_cull(CullData &cull_data, InstanceCullResult &cul
 			}
 		}
 
+		if (cull_data.cull->rt_enabled && !HIDDEN_BY_VISIBILITY_CHECKS) {
+			// Ray tracing scene: geometry in view plus geometry near the camera, so effects can trace what is off screen.
+			// Any render layer may hold casters, but editor-only layers (20 and above) hold gizmos and grids.
+			const uint32_t base_type = idata.flags & InstanceData::FLAG_BASE_TYPE_MASK;
+			if ((base_type == RSE::INSTANCE_MESH || base_type == RSE::INSTANCE_MULTIMESH) && (idata.layer_mask & ((1 << 20) - 1)) && (cull_data.scenario->instance_aabbs[i].in_aabb(cull_data.cull->rt_aabb) || IN_FRUSTUM(cull_data.cull->frustum)) && VIS_CHECK) {
+				cull_result.rt_geometry_instances.push_back(idata.instance_geometry);
+				if (base_type == RSE::INSTANCE_MESH) {
+					mesh_visible = true; // Deformed meshes must update off screen too.
+				}
+			}
+		}
+
 #undef HIDDEN_BY_VISIBILITY_CHECKS
 #undef LAYER_CHECK
 #undef IN_FRUSTUM
@@ -3379,6 +3391,16 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 
 	Vector<Plane> planes = p_camera_data->main_projection.get_projection_planes(p_camera_data->main_transform);
 	cull.frustum = Frustum(planes);
+
+	// Reflection probes do not trace rays; only camera views get a ray tracing scene.
+	cull.rt_enabled = RSG::mesh_storage->is_raytracing_enabled() && render_reflection_probe == nullptr;
+	if (cull.rt_enabled) {
+		real_t extent = GLOBAL_GET_CACHED(real_t, "rendering/raytracing/scene/max_distance");
+		if (extent <= 0.0) {
+			extent = p_camera_data->main_projection.get_z_far();
+		}
+		cull.rt_aabb = AABB(camera_position - Vector3(extent, extent, extent), Vector3(extent, extent, extent) * 2.0);
+	}
 
 	Vector<RID> directional_lights;
 	// directional lights
@@ -3731,7 +3753,7 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 	}
 
 	RENDER_TIMESTAMP("Render 3D Scene");
-	scene_render->render_scene(p_render_buffers, p_camera_data, prev_camera_data, scene_cull_result.geometry_instances, scene_cull_result.light_instances, scene_cull_result.reflections, scene_cull_result.voxel_gi_instances, scene_cull_result.decals, scene_cull_result.lightmaps, scene_cull_result.fog_volumes, p_environment, camera_attributes, p_compositor, p_shadow_atlas, occluders_tex, p_reflection_probe.is_valid() ? RID() : scenario->reflection_atlas, p_reflection_probe, p_reflection_probe_pass, p_screen_mesh_lod_threshold, render_shadow_data, max_shadows_used, render_sdfgi_data, cull.sdfgi.region_count, p_window_output_max_value, &sdfgi_update_data, r_render_info);
+	scene_render->render_scene(p_render_buffers, p_camera_data, prev_camera_data, scene_cull_result.geometry_instances, scene_cull_result.light_instances, scene_cull_result.reflections, scene_cull_result.voxel_gi_instances, scene_cull_result.decals, scene_cull_result.lightmaps, scene_cull_result.fog_volumes, p_environment, camera_attributes, p_compositor, p_shadow_atlas, occluders_tex, p_reflection_probe.is_valid() ? RID() : scenario->reflection_atlas, p_reflection_probe, p_reflection_probe_pass, p_screen_mesh_lod_threshold, render_shadow_data, max_shadows_used, render_sdfgi_data, cull.sdfgi.region_count, p_window_output_max_value, &sdfgi_update_data, r_render_info, cull.rt_enabled ? &scene_cull_result.rt_geometry_instances : nullptr);
 
 	if (p_viewport.is_valid()) {
 		RSG::viewport->viewport_set_prev_camera_data(p_viewport, p_camera_data);

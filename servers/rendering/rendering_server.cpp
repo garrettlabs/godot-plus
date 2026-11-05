@@ -2987,6 +2987,9 @@ void RenderingServer::_bind_methods() {
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_RENDER_INFO_OBJECTS_IN_FRAME);
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_RENDER_INFO_PRIMITIVES_IN_FRAME);
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_RENDER_INFO_DRAW_CALLS_IN_FRAME);
+	BIND_ENUM_CONSTANT(RSE::VIEWPORT_RENDER_INFO_RT_TLAS_INSTANCES);
+	BIND_ENUM_CONSTANT(RSE::VIEWPORT_RENDER_INFO_RT_BLAS_BUILDS);
+	BIND_ENUM_CONSTANT(RSE::VIEWPORT_RENDER_INFO_RT_BLAS_REFITS);
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_RENDER_INFO_MAX);
 
 	BIND_ENUM_CONSTANT(RSE::VIEWPORT_RENDER_INFO_TYPE_VISIBLE);
@@ -3593,6 +3596,7 @@ void RenderingServer::_bind_methods() {
 #endif // RD_ENABLED
 
 	ClassDB::bind_method(D_METHOD("is_on_render_thread"), &RenderingServer::is_on_render_thread);
+	ClassDB::bind_method(D_METHOD("is_raytracing_enabled"), &RenderingServer::is_raytracing_enabled);
 	ClassDB::bind_method(D_METHOD("call_on_render_thread", "callable"), &RenderingServer::call_on_render_thread);
 
 #ifndef DISABLE_DEPRECATED
@@ -3685,6 +3689,10 @@ void RenderingServer::init() {
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/textures/webp_compression/lossless_compression_factor", PROPERTY_HINT_RANGE, "0,100,1"), 25);
 
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/limits/time/time_rollover_secs", PROPERTY_HINT_RANGE, "1,10000,1,or_greater,suffix:s"), 3600);
+
+	GLOBAL_DEF_RST("rendering/raytracing/enabled", false);
+	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/raytracing/scene/max_distance", PROPERTY_HINT_RANGE, "0,10000,0.1,or_greater,suffix:m"), 100.0);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/raytracing/scene/max_blas_builds_per_frame", PROPERTY_HINT_RANGE, "0,65536,1,or_greater"), 0);
 
 	GLOBAL_DEF_RST("rendering/lights_and_shadows/use_physical_light_units", false);
 

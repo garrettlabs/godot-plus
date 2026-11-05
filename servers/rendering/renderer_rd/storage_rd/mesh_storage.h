@@ -151,6 +151,11 @@ private:
 			uint64_t particles_render_pass = 0;
 
 			RID uniform_set;
+
+			// Ray tracing, only used when MeshStorage::raytracing_enabled is true.
+			RID rt_blas; // Built on first use by mesh_surface_get_blas().
+			RID rt_position_buffer; // Unpacked positions, for packed positions the GPU can't use as BLAS input.
+			bool rt_dirty = true; // Vertex or index data changed since the last build.
 		};
 
 		uint32_t blend_shape_count = 0;
@@ -180,6 +185,19 @@ private:
 
 	mutable RID_Owner<Mesh, true> mesh_owner;
 
+	/* Ray tracing */
+
+	// Mesh buffers get acceleration structure build flags and surfaces get a BLAS when this is true.
+	// Decided once at startup: the project setting, Forward+, and ray query support on the device.
+	bool raytracing_enabled = false;
+	// Packed (compressed) positions can be BLAS input directly; otherwise surfaces keep an unpacked copy.
+	bool rt_packed_positions_supported = false;
+	// Deformed BLAS are refitted when their vertices change and fully rebuilt after this many refits.
+	static constexpr uint32_t RT_DEFORMED_REFITS_PER_BUILD = 120;
+
+	bool _mesh_surface_rt_supported(const Mesh::Surface *p_surface) const;
+	void _mesh_surface_rt_unpack_positions(const Mesh::Surface *p_surface, const uint8_t *p_packed, uint32_t p_vertex_count, float *r_positions) const;
+
 	/* Mesh Instance API */
 
 	struct MeshInstance {
@@ -191,6 +209,11 @@ private:
 			uint32_t current_buffer = 0;
 			uint32_t previous_buffer = 0;
 			uint64_t last_change = 0;
+
+			// Ray tracing: one refittable BLAS per deformed vertex buffer, and the last_change it matches.
+			RID rt_blas[2];
+			uint64_t rt_blas_change[2] = {};
+			uint32_t rt_blas_refit_count[2] = {};
 
 			Mesh::Surface::Version *versions = nullptr; //allocated on demand
 			uint32_t version_count = 0;
@@ -415,6 +438,26 @@ public:
 	virtual void mesh_debug_usage(List<RenderingServerTypes::MeshInfo> *r_info) override;
 
 	virtual bool mesh_needs_instance(RID p_mesh, bool p_has_skeleton) override;
+
+	/* Ray tracing (render thread only) */
+
+	virtual bool is_raytracing_enabled() const override { return raytracing_enabled; }
+
+	enum RTBLASOperation {
+		RT_BLAS_NONE,
+		RT_BLAS_BUILT,
+		RT_BLAS_REFITTED,
+	};
+
+	// The BLAS of a mesh surface in mesh space, built on first use (or rebuilt after its data changed) when p_allow_build is true.
+	// r_position_transform maps BLAS space to mesh space: identity, unless the surface's packed positions are used directly.
+	// Returns an invalid RID for surfaces that can't be traced (points, lines, strips, 2D) or not built yet.
+	RID mesh_surface_get_blas(void *p_surface, bool p_allow_build, RTBLASOperation &r_operation, Transform3D &r_position_transform);
+	// The BLAS of a deformed (skinned or blend shape) mesh instance surface, refitted when its vertices changed.
+	// r_deformed is false when the surface has no deformed vertices of its own; use mesh_surface_get_blas() then.
+	RID mesh_instance_surface_get_blas(RID p_mesh_instance, uint32_t p_surface, bool p_allow_build, RTBLASOperation &r_operation, bool &r_deformed);
+	// CPU copy of the current 3D instance transforms (12 floats each, row-major 3x4, at r_data + i * r_stride).
+	bool multimesh_get_rt_transforms(RID p_multimesh, const float *&r_data, uint32_t &r_stride, uint32_t &r_count);
 
 	_FORCE_INLINE_ const RID *mesh_get_surface_count_and_materials(RID p_mesh, uint32_t &r_surface_count) {
 		Mesh *mesh = mesh_owner.get_or_null(p_mesh);

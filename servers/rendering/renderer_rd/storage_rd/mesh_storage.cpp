@@ -30,6 +30,8 @@
 
 #include "mesh_storage.h"
 
+#include "core/config/project_settings.h"
+#include "core/os/os.h"
 #include "servers/rendering/renderer_viewport.h"
 #include "servers/rendering/rendering_server.h"
 #include "servers/rendering/rendering_server_types.h"
@@ -46,6 +48,19 @@ MeshStorage::MeshStorage() {
 	singleton = this;
 
 	default_rd_storage_buffer = RD::get_singleton()->storage_buffer_create(sizeof(uint32_t) * 4);
+
+	if (bool(ProjectSettings::get_singleton()->get_setting("rendering/raytracing/enabled", false))) {
+		// Ray tracing passes only exist in Forward+, and use ray queries from compute shaders.
+		const bool forward_plus = OS::get_singleton()->get_current_rendering_method() == "forward_plus";
+		const bool ray_query = RD::get_singleton()->has_feature(RD::SUPPORTS_RAY_QUERY);
+		raytracing_enabled = forward_plus && ray_query;
+		if (raytracing_enabled) {
+			rt_packed_positions_supported = RD::get_singleton()->acceleration_structure_vertex_format_is_supported(RD::DATA_FORMAT_R16G16B16A16_UNORM);
+			print_verbose(vformat("Ray tracing: enabled (packed vertex positions as BLAS input: %s).", rt_packed_positions_supported ? "yes" : "no, unpacked copies are kept"));
+		} else {
+			print_verbose(vformat("Ray tracing: requested but unavailable (%s), using the raster path.", !forward_plus ? "not Forward+" : "no ray query support on this device"));
+		}
+	}
 
 	//default rd buffers
 	{
@@ -376,8 +391,20 @@ void MeshStorage::mesh_add_surface(RID p_mesh, const RenderingServerTypes::Surfa
 
 	const bool use_as_storage = (new_surface.skin_data.size() || mesh->blend_shape_count > 0);
 	const bool requested_storage_buffer = (new_surface.format & RSE::ARRAY_FLAG_USE_STORAGE_BUFFER);
-	const BitField<RD::BufferCreationBits> as_storage_flag = (use_as_storage || requested_storage_buffer) ? RD::BUFFER_CREATION_AS_STORAGE_BIT : 0;
+	BitField<RD::BufferCreationBits> as_storage_flag = (use_as_storage || requested_storage_buffer) ? RD::BUFFER_CREATION_AS_STORAGE_BIT : 0;
 	const BitField<RD::BufferCreationBits> requested_storage_flag = requested_storage_buffer ? RD::BUFFER_CREATION_AS_STORAGE_BIT : 0;
+
+	// Ray tracing reads triangle positions and indices straight from the mesh buffers.
+	const bool rt_surface = raytracing_enabled && _mesh_surface_rt_supported(s);
+	const bool rt_unpack_positions = rt_surface && (new_surface.format & RSE::ARRAY_FLAG_COMPRESS_ATTRIBUTES) && !rt_packed_positions_supported;
+	const BitField<RD::BufferCreationBits> rt_input_flags = RD::BUFFER_CREATION_DEVICE_ADDRESS_BIT | RD::BUFFER_CREATION_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT;
+	BitField<RD::BufferCreationBits> index_flags = requested_storage_flag;
+	if (rt_surface) {
+		if (!rt_unpack_positions) {
+			as_storage_flag.set_flag(rt_input_flags);
+		}
+		index_flags.set_flag(rt_input_flags);
+	}
 
 	if (new_surface.vertex_data.size()) {
 		// If we have an uncompressed surface that contains normals, but not tangents, we need to differentiate the array
@@ -399,6 +426,14 @@ void MeshStorage::mesh_add_surface(RID p_mesh, const RenderingServerTypes::Surfa
 		}
 	}
 
+	if (rt_unpack_positions && new_surface.vertex_count > 0) {
+		Vector<uint8_t> positions;
+		positions.resize(new_surface.vertex_count * sizeof(float) * 3);
+		s->aabb = new_surface.aabb; // Needed to unpack; set again below.
+		_mesh_surface_rt_unpack_positions(s, new_surface.vertex_data.ptr(), new_surface.vertex_count, reinterpret_cast<float *>(positions.ptrw()));
+		s->rt_position_buffer = RD::get_singleton()->vertex_buffer_create(positions.size(), positions, rt_input_flags);
+	}
+
 	if (new_surface.attribute_data.size()) {
 		s->attribute_buffer = RD::get_singleton()->vertex_buffer_create(new_surface.attribute_data.size(), new_surface.attribute_data, requested_storage_flag);
 		s->attribute_buffer_size = new_surface.attribute_data.size();
@@ -417,7 +452,7 @@ void MeshStorage::mesh_add_surface(RID p_mesh, const RenderingServerTypes::Surfa
 	if (new_surface.index_count) {
 		bool is_index_16 = new_surface.vertex_count <= 65536 && new_surface.vertex_count > 0;
 
-		s->index_buffer = RD::get_singleton()->index_buffer_create(new_surface.index_count, is_index_16 ? RD::INDEX_BUFFER_FORMAT_UINT16 : RD::INDEX_BUFFER_FORMAT_UINT32, new_surface.index_data, false, requested_storage_flag);
+		s->index_buffer = RD::get_singleton()->index_buffer_create(new_surface.index_count, is_index_16 ? RD::INDEX_BUFFER_FORMAT_UINT16 : RD::INDEX_BUFFER_FORMAT_UINT32, new_surface.index_data, false, index_flags);
 		s->index_buffer_size = new_surface.index_data.size();
 		s->index_count = new_surface.index_count;
 		s->index_array = RD::get_singleton()->index_array_create(s->index_buffer, 0, s->index_count);
@@ -519,6 +554,14 @@ void MeshStorage::mesh_add_surface(RID p_mesh, const RenderingServerTypes::Surfa
 void MeshStorage::_mesh_surface_clear(Mesh *p_mesh, int p_surface) {
 	Mesh::Surface &s = *p_mesh->surfaces[p_surface];
 
+	// The BLAS depends on the buffers below, free it first.
+	if (s.rt_blas.is_valid()) {
+		RD::get_singleton()->free_rid(s.rt_blas);
+	}
+	if (s.rt_position_buffer.is_valid()) {
+		RD::get_singleton()->free_rid(s.rt_position_buffer);
+	}
+
 	if (s.vertex_buffer.is_valid()) {
 		RD::get_singleton()->free_rid(s.vertex_buffer); // Clears arrays as dependency automatically, including all versions.
 	}
@@ -581,6 +624,27 @@ void MeshStorage::mesh_surface_update_vertex_region(RID p_mesh, int p_surface, i
 	const uint8_t *r = p_data.ptr();
 
 	RD::get_singleton()->buffer_update(mesh->surfaces[p_surface]->vertex_buffer, p_offset, data_size, r);
+
+	if (raytracing_enabled) {
+		// Positions come first in the vertex buffer; the BLAS only needs a rebuild if they changed.
+		Mesh::Surface *s = mesh->surfaces[p_surface];
+		const uint32_t position_stride = (s->format & RSE::ARRAY_FLAG_COMPRESS_ATTRIBUTES) ? sizeof(uint16_t) * 4 : sizeof(float) * 3;
+		const uint64_t positions_end = uint64_t(s->vertex_count) * position_stride;
+		if (uint64_t(p_offset) < positions_end) {
+			s->rt_dirty = true;
+			if (s->rt_position_buffer.is_valid()) {
+				// Unpack the vertices this update covers completely.
+				const uint32_t first = (uint32_t(p_offset) + position_stride - 1) / position_stride;
+				const uint32_t end = uint32_t(MIN(uint64_t(p_offset) + data_size, positions_end) / position_stride);
+				if (end > first) {
+					LocalVector<float> positions;
+					positions.resize((end - first) * 3);
+					_mesh_surface_rt_unpack_positions(s, r + (first * position_stride - p_offset), end - first, positions.ptr());
+					RD::get_singleton()->buffer_update(s->rt_position_buffer, first * sizeof(float) * 3, positions.size() * sizeof(float), positions.ptr());
+				}
+			}
+		}
+	}
 }
 
 void MeshStorage::mesh_surface_update_attribute_region(RID p_mesh, int p_surface, int p_offset, const Vector<uint8_t> &p_data) {
@@ -620,6 +684,7 @@ void RendererRD::MeshStorage::mesh_surface_update_index_region(RID p_mesh, int p
 	const uint8_t *r = p_data.ptr();
 
 	RD::get_singleton()->buffer_update(mesh->surfaces[p_surface]->index_buffer, p_offset, data_size, r);
+	mesh->surfaces[p_surface]->rt_dirty = true;
 }
 
 RID MeshStorage::mesh_surface_get_vertex_buffer_rd_rid(RID p_mesh, int p_surface) const {
@@ -1007,6 +1072,178 @@ bool MeshStorage::mesh_needs_instance(RID p_mesh, bool p_has_skeleton) {
 	return mesh->blend_shape_count > 0 || (mesh->has_bone_weights && p_has_skeleton);
 }
 
+/* RAY TRACING */
+
+bool MeshStorage::_mesh_surface_rt_supported(const Mesh::Surface *p_surface) const {
+	// Triangle lists with 3D positions. Strips, lines and points have no triangles to trace.
+	return p_surface->primitive == RSE::PRIMITIVE_TRIANGLES && (p_surface->format & RSE::ARRAY_FORMAT_VERTEX) && !(p_surface->format & RSE::ARRAY_FLAG_USE_2D_VERTICES);
+}
+
+void MeshStorage::_mesh_surface_rt_unpack_positions(const Mesh::Surface *p_surface, const uint8_t *p_packed, uint32_t p_vertex_count, float *r_positions) const {
+	// Packed positions are 16-bit unorm, normalized to the surface AABB (see RenderingServer::_surface_set_data()).
+	const Vector3 scale = p_surface->aabb.size / 65535.0;
+	const Vector3 origin = p_surface->aabb.position;
+	for (uint32_t i = 0; i < p_vertex_count; i++) {
+		uint16_t packed[4];
+		memcpy(packed, p_packed + i * sizeof(packed), sizeof(packed));
+		r_positions[i * 3 + 0] = origin.x + packed[0] * scale.x;
+		r_positions[i * 3 + 1] = origin.y + packed[1] * scale.y;
+		r_positions[i * 3 + 2] = origin.z + packed[2] * scale.z;
+	}
+}
+
+RID MeshStorage::mesh_surface_get_blas(void *p_surface, bool p_allow_build, RTBLASOperation &r_operation, Transform3D &r_position_transform) {
+	r_operation = RT_BLAS_NONE;
+	r_position_transform = Transform3D();
+
+	Mesh::Surface *s = reinterpret_cast<Mesh::Surface *>(p_surface);
+	if (!raytracing_enabled || !_mesh_surface_rt_supported(s) || s->vertex_buffer.is_null() || s->vertex_count == 0) {
+		return RID();
+	}
+
+	const bool packed = (s->format & RSE::ARRAY_FLAG_COMPRESS_ATTRIBUTES) && s->rt_position_buffer.is_null();
+	if (packed) {
+		// The BLAS holds the normalized positions; scale them back to the surface AABB with the instance transform.
+		r_position_transform = Transform3D(Basis::from_scale(s->aabb.size), s->aabb.position);
+	}
+
+	if (s->rt_blas.is_valid() && !s->rt_dirty) {
+		return s->rt_blas;
+	}
+	if (!p_allow_build) {
+		// Out of build budget this frame. A stale BLAS still traces the old shape until the rebuild.
+		return s->rt_blas;
+	}
+
+	if (s->rt_blas.is_null()) {
+		const uint32_t primitive_count = s->index_count ? s->index_count : s->vertex_count;
+		if (primitive_count == 0 || (primitive_count % 3) != 0) {
+			s->rt_dirty = false; // Malformed for tracing, don't try again.
+			return RID();
+		}
+
+		RD::AccelerationStructureGeometry geometry;
+		// Opaque: shadow and occlusion rays need no any-hit work. Alpha-tested materials trace as solid.
+		geometry.flags = RD::ACCELERATION_STRUCTURE_GEOMETRY_OPAQUE_BIT;
+		if (packed) {
+			geometry.vertex_buffer = s->vertex_buffer;
+			geometry.vertex_format = RD::DATA_FORMAT_R16G16B16A16_UNORM;
+			geometry.vertex_stride = sizeof(uint16_t) * 4;
+		} else {
+			geometry.vertex_buffer = s->rt_position_buffer.is_valid() ? s->rt_position_buffer : s->vertex_buffer;
+			geometry.vertex_format = RD::DATA_FORMAT_R32G32B32_SFLOAT;
+			geometry.vertex_stride = sizeof(float) * 3;
+		}
+		geometry.vertex_count = s->vertex_count;
+		if (s->index_count) {
+			geometry.index_buffer = s->index_buffer;
+			geometry.index_count = s->index_count;
+		}
+
+		s->rt_blas = RD::get_singleton()->blas_create(Span<RD::AccelerationStructureGeometry>(&geometry, 1), RD::ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT);
+		if (s->rt_blas.is_null()) {
+			s->rt_dirty = false;
+			return RID();
+		}
+	}
+
+	Error err = RD::get_singleton()->blas_build(s->rt_blas);
+	s->rt_dirty = false;
+	ERR_FAIL_COND_V(err != OK, RID());
+	r_operation = RT_BLAS_BUILT;
+	return s->rt_blas;
+}
+
+RID MeshStorage::mesh_instance_surface_get_blas(RID p_mesh_instance, uint32_t p_surface, bool p_allow_build, RTBLASOperation &r_operation, bool &r_deformed) {
+	r_operation = RT_BLAS_NONE;
+	r_deformed = false;
+
+	MeshInstance *mi = mesh_instance_owner.get_or_null(p_mesh_instance);
+	if (!raytracing_enabled || mi == nullptr || p_surface >= mi->surfaces.size()) {
+		return RID();
+	}
+
+	MeshInstance::Surface &mis = mi->surfaces[p_surface];
+	const uint32_t buffer = mis.current_buffer;
+	if (mis.vertex_buffer[buffer].is_null()) {
+		return RID(); // Not deformed, the mesh surface BLAS applies.
+	}
+	r_deformed = true;
+
+	Mesh::Surface *s = mi->mesh->surfaces[p_surface];
+	if (!_mesh_surface_rt_supported(s) || mis.last_change == 0) {
+		return RID(); // Nothing to trace, or not deformed yet.
+	}
+
+	if (mis.rt_blas[buffer].is_valid() && mis.rt_blas_change[buffer] == mis.last_change) {
+		return mis.rt_blas[buffer];
+	}
+
+	if (mis.rt_blas[buffer].is_null()) {
+		if (!p_allow_build) {
+			return RID();
+		}
+		const uint32_t primitive_count = s->index_count ? s->index_count : s->vertex_count;
+		if (s->vertex_count == 0 || primitive_count == 0 || (primitive_count % 3) != 0) {
+			return RID();
+		}
+
+		// Deformed vertices are always unpacked 3D floats, written by the skeleton shader.
+		RD::AccelerationStructureGeometry geometry;
+		geometry.flags = RD::ACCELERATION_STRUCTURE_GEOMETRY_OPAQUE_BIT;
+		geometry.vertex_buffer = mis.vertex_buffer[buffer];
+		geometry.vertex_format = RD::DATA_FORMAT_R32G32B32_SFLOAT;
+		geometry.vertex_stride = sizeof(float) * 3;
+		geometry.vertex_count = s->vertex_count;
+		if (s->index_count) {
+			geometry.index_buffer = s->index_buffer;
+			geometry.index_count = s->index_count;
+		}
+
+		mis.rt_blas[buffer] = RD::get_singleton()->blas_create(Span<RD::AccelerationStructureGeometry>(&geometry, 1), RD::ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT | RD::ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT);
+		ERR_FAIL_COND_V(mis.rt_blas[buffer].is_null(), RID());
+		mis.rt_blas_refit_count[buffer] = RT_DEFORMED_REFITS_PER_BUILD; // Forces the full build below.
+	}
+
+	Error err;
+	if (mis.rt_blas_refit_count[buffer] >= RT_DEFORMED_REFITS_PER_BUILD) {
+		if (!p_allow_build) {
+			// Refit instead, the full rebuild waits for budget.
+			err = RD::get_singleton()->blas_update(mis.rt_blas[buffer]);
+			r_operation = RT_BLAS_REFITTED;
+		} else {
+			err = RD::get_singleton()->blas_build(mis.rt_blas[buffer]);
+			mis.rt_blas_refit_count[buffer] = 0;
+			r_operation = RT_BLAS_BUILT;
+		}
+	} else {
+		err = RD::get_singleton()->blas_update(mis.rt_blas[buffer]);
+		mis.rt_blas_refit_count[buffer]++;
+		r_operation = RT_BLAS_REFITTED;
+	}
+	mis.rt_blas_change[buffer] = mis.last_change;
+	ERR_FAIL_COND_V(err != OK, RID());
+	return mis.rt_blas[buffer];
+}
+
+bool MeshStorage::multimesh_get_rt_transforms(RID p_multimesh, const float *&r_data, uint32_t &r_stride, uint32_t &r_count) {
+	MultiMesh *multimesh = multimesh_owner.get_or_null(p_multimesh);
+	if (multimesh == nullptr || multimesh->xform_format != RSE::MULTIMESH_TRANSFORM_3D || multimesh->instances == 0 || multimesh->indirect) {
+		return false;
+	}
+
+	// Transforms only live on the GPU unless set individually; read them back once and keep the cache.
+	_multimesh_make_local(multimesh);
+	if (multimesh->data_cache.is_empty()) {
+		return false;
+	}
+
+	r_stride = multimesh->stride_cache;
+	r_count = multimesh->visible_instances < 0 ? multimesh->instances : MIN(multimesh->visible_instances, multimesh->instances);
+	r_data = multimesh->data_cache.ptr() + uint64_t(multimesh->motion_vectors_current_offset) * multimesh->stride_cache;
+	return true;
+}
+
 Dependency *MeshStorage::mesh_get_dependency(RID p_mesh) const {
 	Mesh *mesh = mesh_owner.get_or_null(p_mesh);
 	ERR_FAIL_NULL_V(mesh, nullptr);
@@ -1091,7 +1328,13 @@ void MeshStorage::_mesh_instance_add_surface(MeshInstance *mi, Mesh *mesh, uint3
 }
 
 void MeshStorage::_mesh_instance_add_surface_buffer(MeshInstance *mi, Mesh *mesh, MeshInstance::Surface *s, uint32_t p_surface, uint32_t p_buffer_index) {
-	s->vertex_buffer[p_buffer_index] = RD::get_singleton()->vertex_buffer_create(mesh->surfaces[p_surface]->vertex_buffer_size, Vector<uint8_t>(), RD::BUFFER_CREATION_AS_STORAGE_BIT);
+	BitField<RD::BufferCreationBits> buffer_flags = RD::BUFFER_CREATION_AS_STORAGE_BIT;
+	if (raytracing_enabled && _mesh_surface_rt_supported(mesh->surfaces[p_surface])) {
+		// Deformed vertices are BLAS input too.
+		buffer_flags.set_flag(RD::BUFFER_CREATION_DEVICE_ADDRESS_BIT);
+		buffer_flags.set_flag(RD::BUFFER_CREATION_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT);
+	}
+	s->vertex_buffer[p_buffer_index] = RD::get_singleton()->vertex_buffer_create(mesh->surfaces[p_surface]->vertex_buffer_size, Vector<uint8_t>(), buffer_flags);
 
 	Vector<RD::Uniform> uniforms;
 	{
@@ -1125,6 +1368,9 @@ void MeshStorage::_mesh_instance_remove_surface(MeshInstance *mi, int p_surface)
 		memfree(surface.versions);
 	}
 	for (uint32_t i = 0; i < 2; i++) {
+		if (surface.rt_blas[i].is_valid()) {
+			RD::get_singleton()->free_rid(surface.rt_blas[i]);
+		}
 		if (surface.vertex_buffer[i].is_valid()) {
 			RD::get_singleton()->free_rid(surface.vertex_buffer[i]);
 		}
