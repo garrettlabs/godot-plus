@@ -3583,6 +3583,9 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 
 	max_shadows_used = 0;
 
+	// No ray traced shadows unless chosen below for this render.
+	RSG::light_storage->set_rt_shadow_lights(Span<RID>());
+
 	if (p_using_shadows) { //setup shadow maps
 
 		// Directional Shadows
@@ -3602,6 +3605,40 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 			}
 		}
 
+		// Ray traced shadows replace the shadow maps of the omni and spot lights nearest to the camera.
+		// Single-view camera renders only; reflection probes and multiview keep shadow maps.
+		{
+			thread_local LocalVector<Pair<real_t, Instance *>> rt_candidates;
+			thread_local LocalVector<RID> rt_lights;
+			rt_candidates.clear();
+			rt_lights.clear();
+			if (cull.rt_enabled && p_using_shadows && p_shadow_atlas.is_valid() && p_camera_data->view_count == 1 && GLOBAL_GET_CACHED(bool, "rendering/raytracing/shadows/enabled")) {
+				for (uint32_t i = 0; i < (uint32_t)scene_cull_result.lights.size(); i++) {
+					Instance *ins = scene_cull_result.lights[i];
+					const RSE::LightType type = RSG::light_storage->light_get_type(ins->base);
+					if ((type != RSE::LIGHT_OMNI && type != RSE::LIGHT_SPOT) || !RSG::light_storage->light_has_shadow(ins->base)) {
+						continue;
+					}
+					InstanceLightData *light = static_cast<InstanceLightData *>(ins->base_data);
+					if (!RSG::light_storage->light_instance_is_shadow_visible_at_position(light->instance, camera_position)) {
+						continue;
+					}
+					rt_candidates.push_back(Pair<real_t, Instance *>(ins->transform.origin.distance_squared_to(camera_position), ins));
+				}
+				const uint32_t max_lights = CLAMP(GLOBAL_GET_CACHED(int, "rendering/raytracing/shadows/max_positional_lights"), 0, 255);
+				if (rt_candidates.size() > max_lights) {
+					rt_candidates.sort_custom<PairSort<real_t, Instance *>>();
+					rt_candidates.resize(max_lights);
+				}
+				for (const Pair<real_t, Instance *> &candidate : rt_candidates) {
+					InstanceLightData *light = static_cast<InstanceLightData *>(candidate.second->base_data);
+					light->rt_shadow_pass = render_pass;
+					rt_lights.push_back(light->instance);
+				}
+			}
+			RSG::light_storage->set_rt_shadow_lights(Span<RID>(rt_lights.ptr(), rt_lights.size()));
+		}
+
 		// Positional Shadows
 		for (uint32_t i = 0; i < (uint32_t)scene_cull_result.lights.size(); i++) {
 			Instance *ins = scene_cull_result.lights[i];
@@ -3611,6 +3648,13 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 			}
 
 			InstanceLightData *light = static_cast<InstanceLightData *>(ins->base_data);
+
+			if (light->rt_shadow_pass == render_pass) {
+				// Ray traced, no shadow map to allocate or draw. Its old shadow map (if any) is stale by the time
+				// the light falls back to shadow mapping, so have it redrawn then.
+				light->make_shadow_dirty();
+				continue;
+			}
 
 			if (!RSG::light_storage->light_instance_is_shadow_visible_at_position(light->instance, camera_position)) {
 				continue;

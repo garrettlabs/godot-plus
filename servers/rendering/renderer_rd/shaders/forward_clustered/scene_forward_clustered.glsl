@@ -1047,6 +1047,27 @@ layout(location = 2) out vec2 motion_vector;
 #endif
 
 #include "../scene_forward_gi_inc.glsl"
+
+#define USE_RT_SHADOWS
+
+half rt_shadow_get(uint p_slot) {
+	uvec2 pixel = uvec2(gl_FragCoord.xy);
+	uvec4 entries = rt_shadow_buffer.data[pixel.y * uint(scene_data_block.data.viewport_size.x) + pixel.x];
+	float traced_depth = uintBitsToFloat(entries.w);
+	if (abs(traced_depth - gl_FragCoord.z) > max(1e-6, gl_FragCoord.z * 1e-4)) {
+		// Not the opaque surface the pass traced from (a transparent one in front of it): no ray traced shadow.
+		return half(1.0);
+	}
+	uint key = p_slot + 1u;
+	for (uint i = 0u; i < 6u; i++) {
+		uint entry = (entries[i >> 1u] >> ((i & 1u) * 16u)) & 0xFFFFu;
+		if ((entry >> 8u) == key) {
+			return half(float(entry & 0xFFu) / 255.0);
+		}
+	}
+	return half(1.0); // Not traced for this pixel (more lights than entries, or outside the light).
+}
+
 #include "../scene_forward_lights_inc.glsl"
 
 #endif //!defined(MODE_RENDER_DEPTH) && !defined(MODE_UNSHADED)

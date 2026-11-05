@@ -3317,6 +3317,16 @@
 		<member name="rendering/raytracing/scene/max_distance" type="float" setter="" getter="" default="100.0">
 			The ray tracing scene holds the mesh instances in view plus those whose bounds intersect a cube of this half-size around the camera, in view or not, so that effects can trace geometry outside the view (shadow casters behind the camera, for example). [code]0.0[/code] uses the camera's far plane distance.
 		</member>
+		<member name="rendering/raytracing/shadows/enabled" type="bool" setter="" getter="" default="true">
+			If [code]true[/code] and ray tracing is in effect (see [member rendering/raytracing/enabled]), the shadows of the omni and spot lights nearest to the camera are ray traced instead of rendered into shadow maps: those lights take no shadow atlas space and cost no shadow draws, however much moves in their range. Directional lights, reflection probes and multiview (XR) rendering keep shadow maps.
+			Shadow rays start from the opaque surfaces of the depth pre-pass, so transparent surfaces receive no ray traced shadows. Every mesh with a shadow casting setting other than [constant GeometryInstance3D.SHADOW_CASTING_SETTING_OFF] casts, regardless of [member Light3D.shadow_caster_mask] and [member Light3D.light_cull_mask]. Alpha-tested materials cast as opaque.
+		</member>
+		<member name="rendering/raytracing/shadows/max_positional_lights" type="int" setter="" getter="" default="64">
+			The maximum number of shadow-casting omni and spot lights whose shadows are ray traced per view, nearest to the camera first. Lights beyond it use shadow maps. Each pixel traces at most six of them; further lights that reach a pixel light it unshadowed.
+		</member>
+		<member name="rendering/raytracing/shadows/soft_shadow_samples" type="int" setter="" getter="" default="4">
+			The number of shadow rays per pixel and light for lights with a [member Light3D.light_size] above zero, spread over the light's sphere for soft shadows. Lights with no size trace one ray (hard shadows). The sample pattern rotates per pixel and per frame, so few samples look noisy without temporal antialiasing.
+		</member>
 		<member name="rendering/reflections/reflection_atlas/reflection_count" type="int" setter="" getter="" default="64">
 			Number of cubemaps to store in the reflection atlas. The number of [ReflectionProbe]s in a scene will be limited by this amount. A higher number requires more VRAM.
 		</member>

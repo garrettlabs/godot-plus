@@ -757,6 +757,19 @@ void LightStorage::select_positional_contact_shadows(RenderDataRD *p_render_data
 	}
 }
 
+void LightStorage::set_rt_shadow_lights(Span<RID> p_light_instances) {
+	// A new version invalidates every slot of the previous scene render.
+	rt_shadow_version++;
+	rt_shadow_lights.clear();
+	for (uint32_t i = 0; i < p_light_instances.size(); i++) {
+		LightInstance *light_instance = light_instance_owner.get_or_null(p_light_instances[i]);
+		ERR_CONTINUE(light_instance == nullptr);
+		light_instance->rt_shadow_slot = rt_shadow_lights.size();
+		light_instance->rt_shadow_version = rt_shadow_version;
+		rt_shadow_lights.push_back(p_light_instances[i]);
+	}
+}
+
 void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const PagedArray<RID> &p_lights, const Transform3D &p_camera_transform, RID p_shadow_atlas, bool p_using_shadows, uint32_t &r_directional_light_count, uint32_t &r_positional_light_count, bool &r_directional_light_soft_shadows) {
 	ForwardIDStorage *forward_id_storage = ForwardIDStorage::get_singleton();
 	RendererRD::TextureStorage *texture_storage = RendererRD::TextureStorage::get_singleton();
@@ -1205,21 +1218,29 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 			light_data.cos_spot_angle = MIN(Math::floor(Math::log2(MAX(MIN(texture_size.x, texture_size.y), 1.0f))), texture_storage->area_light_atlas_get_mipmaps()) - 1.0f; // max mipmaps
 		}
 
+		// Ray traced lights have no shadow map; the forward pass reads the ray traced shadow pass instead.
+		const bool rt_shadow = p_using_shadows && light->shadow && light_instance->rt_shadow_version == rt_shadow_version && (type == RSE::LIGHT_OMNI || type == RSE::LIGHT_SPOT);
+		light_data.rt_shadow_index = 0xFFFFFFFF;
+
 		const bool needs_shadow =
+				!rt_shadow &&
 				p_using_shadows &&
 				owns_shadow_atlas(p_shadow_atlas) &&
 				shadow_atlas_owns_light_instance(p_shadow_atlas, light_instance->self) &&
 				light->shadow;
 
 		bool in_shadow_range = true;
-		if (needs_shadow && light->distance_fade) {
+		if ((needs_shadow || rt_shadow) && light->distance_fade) {
 			if (distance > light->distance_fade_shadow + light->distance_fade_length) {
 				// Out of range, don't draw shadows to improve performance.
 				in_shadow_range = false;
 			}
 		}
 
-		if (needs_shadow && in_shadow_range) {
+		if (rt_shadow && in_shadow_range) {
+			light_data.shadow_opacity = light->param[RSE::LIGHT_PARAM_SHADOW_OPACITY] * shadow_opacity_fade;
+			light_data.rt_shadow_index = light_instance->rt_shadow_slot;
+		} else if (needs_shadow && in_shadow_range) {
 			// fill in the shadow information
 
 			light_data.shadow_opacity = light->param[RSE::LIGHT_PARAM_SHADOW_OPACITY] * shadow_opacity_fade;

@@ -164,6 +164,12 @@ void RenderForwardClustered::RenderBufferDataForwardClustered::free_data() {
 		rt_tlas = RID();
 		rt_tlas_capacity = 0;
 	}
+
+	if (rt_shadow_buffer.is_valid()) {
+		RD::get_singleton()->free_rid(rt_shadow_buffer);
+		rt_shadow_buffer = RID();
+		rt_shadow_buffer_pixels = 0;
+	}
 }
 
 void RenderForwardClustered::RenderBufferDataForwardClustered::configure(RenderSceneBuffersRD *p_render_buffers) {
@@ -2129,6 +2135,44 @@ void RenderForwardClustered::_update_raytracing_scene(const RenderDataRD *p_rend
 	}
 }
 
+void RenderForwardClustered::_process_rt_shadows(const RenderDataRD *p_render_data, RenderBufferDataForwardClustered *p_rb_data) {
+	RendererRD::LightStorage *light_storage = RendererRD::LightStorage::get_singleton();
+	Ref<RenderSceneBuffersRD> rb = p_render_data->render_buffers;
+
+	rt_shadow_lights.clear();
+	for (RID light_instance : light_storage->get_rt_shadow_lights()) {
+		RID base = light_storage->light_instance_get_base_light(light_instance);
+		const Transform3D xform = light_storage->light_instance_get_base_transform(light_instance);
+		const float radius = light_storage->light_get_param(base, RSE::LIGHT_PARAM_RANGE);
+
+		RendererRD::RTShadows::Light light = {};
+		light.position[0] = xform.origin.x;
+		light.position[1] = xform.origin.y;
+		light.position[2] = xform.origin.z;
+		light.radius = radius;
+		const Vector3 direction = -xform.basis.get_column(Vector3::AXIS_Z).normalized();
+		light.direction[0] = direction.x;
+		light.direction[1] = direction.y;
+		light.direction[2] = direction.z;
+		light.cos_spot_angle = light_storage->light_get_type(base) == RSE::LIGHT_SPOT ? Math::cos(Math::deg_to_rad(light_storage->light_get_param(base, RSE::LIGHT_PARAM_SPOT_ANGLE))) : -2.0f;
+		light.size = light_storage->light_get_param(base, RSE::LIGHT_PARAM_SIZE); // Radius, as the shadow map path reads it.
+		// Like the near plane of the light's shadow map: geometry this close to the light doesn't occlude it.
+		light.near = MAX(radius * 0.005f, light.size);
+		light.slot = rt_shadow_lights.size();
+		rt_shadow_lights.push_back(light);
+	}
+	if (rt_shadow_lights.is_empty() || p_rb_data->rt_tlas.is_null()) {
+		return;
+	}
+
+	RENDER_TIMESTAMP("Ray Traced Shadows");
+	RD::get_singleton()->draw_command_begin_label("Ray Traced Shadows");
+	const Size2i size = rb->get_internal_size();
+	const uint32_t soft_samples = CLAMP(GLOBAL_GET_CACHED(int, "rendering/raytracing/shadows/soft_shadow_samples"), 1, 64);
+	rt_shadows->trace(p_rb_data->rt_tlas, rb->get_depth_texture(0), p_rb_data->get_normal_roughness(0), p_rb_data->rt_shadow_buffer, size, p_render_data->scene_data->view_projection[0], p_render_data->scene_data->cam_transform, rt_shadow_lights, RT_INSTANCE_MASK_SHADOW_CASTER, soft_samples, RSG::rasterizer->get_frame_number());
+	RD::get_singleton()->draw_command_end_label();
+}
+
 void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Color &p_default_bg_color) {
 	GodotProfileZone("RenderForwardClustered::_render_scene");
 	scene_state.used_uniform_buffer_count = 0;
@@ -2346,6 +2390,21 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		RD::get_singleton()->draw_command_end_label();
 	}
 
+	// Scene culling chose the lights whose shadows are traced (and skipped their shadow maps). The pass needs
+	// the normal-roughness buffer from the depth pre-pass and a per pixel output buffer bound before the passes start.
+	const bool using_rt_shadows = rt_shadows != nullptr && rb_data.is_valid() && p_render_data->rt_instances != nullptr && !is_reflection_probe && !is_multiview && !light_storage->get_rt_shadow_lights().is_empty();
+	if (using_rt_shadows) {
+		const Size2i size = rb->get_internal_size();
+		const uint32_t pixels = size.x * size.y;
+		if (rb_data->rt_shadow_buffer.is_null() || rb_data->rt_shadow_buffer_pixels != pixels) {
+			if (rb_data->rt_shadow_buffer.is_valid()) {
+				RD::get_singleton()->free_rid(rb_data->rt_shadow_buffer);
+			}
+			rb_data->rt_shadow_buffer = RD::get_singleton()->storage_buffer_create(pixels * RendererRD::RTShadows::ENTRY_SIZE);
+			rb_data->rt_shadow_buffer_pixels = pixels;
+		}
+	}
+
 	if (!is_reflection_probe) {
 		if (using_voxelgi) {
 			depth_pass_mode = PASS_MODE_DEPTH_NORMAL_ROUGHNESS_VOXEL_GI;
@@ -2361,6 +2420,11 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 				depth_pass_mode = PASS_MODE_DEPTH_NORMAL_ROUGHNESS;
 			}
 		} else if (get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_NORMAL_BUFFER || scene_state.used_normal_texture) {
+			depth_pass_mode = PASS_MODE_DEPTH_NORMAL_ROUGHNESS;
+		}
+
+		if (using_rt_shadows && depth_pass_mode == PASS_MODE_DEPTH) {
+			// Shadow rays start off the surface along its normal.
 			depth_pass_mode = PASS_MODE_DEPTH_NORMAL_ROUGHNESS;
 		}
 
@@ -2534,7 +2598,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 
 	bool debug_voxelgis = get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_VOXEL_GI_ALBEDO || get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_VOXEL_GI_LIGHTING || get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_VOXEL_GI_EMISSION;
 	bool debug_sdfgi_probes = get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_SDFGI_PROBES;
-	bool force_depth_pre_pass = scene_state.used_opaque_stencil || using_ssao || using_ssr || using_sscs || using_ssil;
+	bool force_depth_pre_pass = scene_state.used_opaque_stencil || using_ssao || using_ssr || using_sscs || using_ssil || using_rt_shadows;
 	bool depth_pre_pass = (force_depth_pre_pass || scene_shader.depth_prepass_enabled) && depth_framebuffer.is_valid();
 
 	SceneShaderForwardClustered::ShaderSpecialization base_specialization = scene_shader.default_specialization;
@@ -2612,6 +2676,10 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		}
 	}
 	_pre_opaque_render(p_render_data, using_ssao, using_ssil, using_ssr, using_sscs, using_sdfgi || using_voxelgi, normal_roughness_views, voxel_gi_views);
+
+	if (using_rt_shadows) {
+		_process_rt_shadows(p_render_data, rb_data.ptr());
+	}
 
 	if (current_cluster_builder) {
 		base_specialization.cluster_has_area_light = current_cluster_builder->get_cluster_count_by_type(ClusterBuilderRD::ELEMENT_TYPE_AREA_LIGHT) != 0;
@@ -4163,6 +4231,14 @@ RID RenderForwardClustered::_setup_render_pass_uniform_set(RenderListType p_rend
 		u.append_id(texture);
 		uniforms.push_back(u);
 	}
+	{
+		RD::Uniform u;
+		u.binding = 39;
+		u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+		RID buffer = (rb_data.is_valid() && rb_data->rt_shadow_buffer.is_valid()) ? rb_data->rt_shadow_buffer : rt_shadow_default_buffer;
+		u.append_id(buffer);
+		uniforms.push_back(u);
+	}
 #ifdef MODULE_TEXTURE_STREAMING_ENABLED
 	{
 		RD::Uniform u;
@@ -5676,6 +5752,10 @@ RenderForwardClustered::RenderForwardClustered() {
 	fsr2_effect = memnew(RendererRD::FSR2Effect);
 	dlss_effect = memnew(RendererRD::DLSSEffect);
 	ss_effects = memnew(RendererRD::SSEffects);
+	rt_shadow_default_buffer = RD::get_singleton()->storage_buffer_create(RendererRD::RTShadows::ENTRY_SIZE);
+	if (RendererRD::MeshStorage::get_singleton()->is_raytracing_enabled()) {
+		rt_shadows = memnew(RendererRD::RTShadows);
+	}
 	motion_vectors_store = memnew(RendererRD::MotionVectorsStore);
 #ifdef METAL_MFXTEMPORAL_ENABLED
 	mfx_temporal_effect = memnew(RendererRD::MFXTemporalEffect);
@@ -5687,6 +5767,12 @@ RenderForwardClustered::~RenderForwardClustered() {
 		memdelete(ss_effects);
 		ss_effects = nullptr;
 	}
+
+	if (rt_shadows != nullptr) {
+		memdelete(rt_shadows);
+		rt_shadows = nullptr;
+	}
+	RD::get_singleton()->free_rid(rt_shadow_default_buffer);
 
 	if (taa != nullptr) {
 		memdelete(taa);

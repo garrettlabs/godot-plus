@@ -124,6 +124,10 @@ private:
 		uint32_t cull_mask = 0;
 		uint32_t light_directional_index = 0;
 
+		// Ray traced shadow slot, valid while rt_shadow_version matches LightStorage::rt_shadow_version.
+		uint32_t rt_shadow_slot = 0;
+		uint64_t rt_shadow_version = 0;
+
 		Rect2 directional_rect;
 
 		HashSet<RID> shadow_atlases; //shadow atlases where this light is registered
@@ -156,7 +160,7 @@ private:
 		float shadow_opacity;
 
 		uint32_t sscs_index; // layer in the screen-space contact shadow array, 0xffffffff for none
-		float pad;
+		uint32_t rt_shadow_index; // slot in the ray traced shadow pass, 0xFFFFFFFF when the light uses its shadow map
 		float atlas_rect[4]; // in omni, used for atlas uv, in spot, used for projector uv
 		float shadow_matrix[16];
 		float shadow_bias;
@@ -393,6 +397,11 @@ private:
 	};
 
 	mutable RID_Owner<LightmapInstance> lightmap_instance_owner;
+
+	/* RAY TRACED SHADOWS */
+
+	LocalVector<RID> rt_shadow_lights;
+	uint64_t rt_shadow_version = 1;
 
 	/* SHADOW ATLAS */
 
@@ -1188,6 +1197,10 @@ public:
 	}
 
 	virtual void shadow_atlas_update(RID p_atlas) override;
+
+	virtual void set_rt_shadow_lights(Span<RID> p_light_instances) override;
+	const LocalVector<RID> &get_rt_shadow_lights() const { return rt_shadow_lights; }
+
 	static RD::DataFormat get_shadow_atlas_depth_format(bool p_16_bits);
 	static uint32_t get_shadow_atlas_depth_usage_bits();
 

@@ -3696,6 +3696,9 @@ void RenderingServer::init() {
 	GLOBAL_DEF_RST("rendering/raytracing/enabled", false);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/raytracing/scene/max_distance", PROPERTY_HINT_RANGE, "0,10000,0.1,or_greater,suffix:m"), 100.0);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/raytracing/scene/max_blas_builds_per_frame", PROPERTY_HINT_RANGE, "0,65536,1,or_greater"), 0);
+	GLOBAL_DEF("rendering/raytracing/shadows/enabled", true);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/raytracing/shadows/max_positional_lights", PROPERTY_HINT_RANGE, "0,255,1"), 64);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/raytracing/shadows/soft_shadow_samples", PROPERTY_HINT_RANGE, "1,64,1"), 4);
 
 	GLOBAL_DEF_RST("rendering/lights_and_shadows/use_physical_light_units", false);
 

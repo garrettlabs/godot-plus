@@ -215,6 +215,9 @@ public:
 
 	virtual void shadow_atlas_update(RID p_atlas) = 0;
 
+	// Omni and spot light instances whose shadows the next scene render traces instead of rendering shadow maps; their index is their slot.
+	virtual void set_rt_shadow_lights(Span<RID> p_light_instances) {}
+
 	virtual void directional_shadow_atlas_set_size(int p_size, bool p_16_bits = true) = 0;
 	virtual int get_directional_light_shadow_size(RID p_light_instance) = 0;
 	virtual void set_directional_shadow_count(int p_count) = 0;

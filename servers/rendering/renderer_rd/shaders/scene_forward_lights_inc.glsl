@@ -499,7 +499,17 @@ void light_process_omni(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 	half shadow = half(1.0);
 #ifndef SHADOWS_DISABLED
 	// Omni light shadow.
-	if (omni_attenuation > HALF_FLT_MIN && omni_lights.data[idx].shadow_opacity > 0.001) {
+	bool use_shadow_map = true;
+#ifdef USE_RT_SHADOWS
+	if (omni_lights.data[idx].rt_shadow_index != 0xFFFFFFFFu) {
+		// Ray traced in a pass of its own, no shadow map.
+		use_shadow_map = false;
+		if (omni_attenuation > HALF_FLT_MIN && omni_lights.data[idx].shadow_opacity > 0.001) {
+			shadow = mix(half(1.0), half(rt_shadow_get(omni_lights.data[idx].rt_shadow_index)), half(omni_lights.data[idx].shadow_opacity));
+		}
+	}
+#endif
+	if (use_shadow_map && omni_attenuation > HALF_FLT_MIN && omni_lights.data[idx].shadow_opacity > 0.001) {
 		// there is a shadowmap
 		vec2 texel_size = scene_data_block.data.shadow_atlas_pixel_size;
 		vec4 base_uv_rect = omni_lights.data[idx].atlas_rect;
@@ -634,7 +644,7 @@ void light_process_omni(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 	half transmittance_z = transmittance_depth; //no transmittance by default
 	transmittance_color.a *= omni_attenuation;
 #ifndef SHADOWS_DISABLED
-	if (omni_lights.data[idx].shadow_opacity > 0.001) {
+	if (omni_lights.data[idx].shadow_opacity > 0.001 && omni_lights.data[idx].rt_shadow_index == 0xFFFFFFFFu) {
 		// Redo shadowmapping, but shrink the model a bit to avoid artifacts.
 		vec2 texel_size = scene_data_block.data.shadow_atlas_pixel_size;
 		vec4 uv_rect = omni_lights.data[idx].atlas_rect;
@@ -821,7 +831,17 @@ void light_process_spot(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 	half shadow = half(1.0);
 #ifndef SHADOWS_DISABLED
 	// Spot light shadow.
-	if (spot_attenuation > HALF_FLT_MIN && spot_lights.data[idx].shadow_opacity > 0.001) {
+	bool use_shadow_map = true;
+#ifdef USE_RT_SHADOWS
+	if (spot_lights.data[idx].rt_shadow_index != 0xFFFFFFFFu) {
+		// Ray traced in a pass of its own, no shadow map.
+		use_shadow_map = false;
+		if (spot_attenuation > HALF_FLT_MIN && spot_lights.data[idx].shadow_opacity > 0.001) {
+			shadow = mix(half(1.0), half(rt_shadow_get(spot_lights.data[idx].rt_shadow_index)), half(spot_lights.data[idx].shadow_opacity));
+		}
+	}
+#endif
+	if (use_shadow_map && spot_attenuation > HALF_FLT_MIN && spot_lights.data[idx].shadow_opacity > 0.001) {
 		vec3 normal_bias = vec3(normal) * light_length * spot_lights.data[idx].shadow_normal_bias * (1.0 - abs(dot(normal, light_rel_vec_norm)));
 
 		//there is a shadowmap
@@ -900,7 +920,7 @@ void light_process_spot(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 	half transmittance_z = transmittance_depth;
 	transmittance_color.a *= spot_attenuation;
 #ifndef SHADOWS_DISABLED
-	if (spot_lights.data[idx].shadow_opacity > 0.001) {
+	if (spot_lights.data[idx].shadow_opacity > 0.001 && spot_lights.data[idx].rt_shadow_index == 0xFFFFFFFFu) {
 		vec4 splane = (spot_lights.data[idx].shadow_matrix * vec4(vertex - vec3(normal) * spot_lights.data[idx].transmittance_bias, 1.0));
 		splane /= splane.w;
 
