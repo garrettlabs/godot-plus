@@ -515,6 +515,13 @@ vec3 get_energy_compensation(vec3 f0, float env) {
 	return 1.0 + f0 * (1.0 / env - 1.0);
 }
 
+// Ray traced shadows of omni and spot lights, written per pixel by the ray traced shadow pass after the depth pre-pass.
+// Six 16-bit entries ((light slot + 1) << 8 | visibility) in xyz, the depth they were traced at in w.
+layout(set = 1, binding = 39, std430) restrict readonly buffer RTShadowBuffer {
+	uvec4 data[];
+}
+rt_shadow_buffer;
+
 #ifdef TEXTURE_STREAMING
 // Texture streaming material feedback buffer access
 layout(set = 1, binding = 38, std430) buffer restrict MaterialFeedbackBuffer {

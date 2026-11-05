@@ -20,7 +20,8 @@ struct LightData { //this structure needs to be as packed as possible
 
 	float specular_amount;
 	float shadow_opacity;
-	float pad[2];
+	float pad;
+	uint rt_shadow_index; // slot in the ray traced shadow pass, 0xFFFFFFFF when the light uses its shadow map
 
 	vec4 atlas_rect; // rect in the shadow atlas
 	mat4 shadow_matrix;

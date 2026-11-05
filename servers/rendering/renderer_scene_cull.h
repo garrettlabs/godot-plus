@@ -695,6 +695,7 @@ public:
 	struct InstanceLightData : public InstanceBaseData {
 		RID instance;
 		uint64_t last_version;
+		uint64_t rt_shadow_pass = 0; // Render pass in which this light's shadow is ray traced instead of shadow mapped.
 		List<Instance *>::Element *D; // directional light in scenario
 
 		bool uses_projector = false;

@@ -35,6 +35,7 @@
 #include "servers/rendering/renderer_rd/cluster_builder_rd.h"
 #include "servers/rendering/renderer_rd/effects/fsr2.h"
 #include "servers/rendering/renderer_rd/effects/motion_vectors_store.h"
+#include "servers/rendering/renderer_rd/effects/rt_shadows.h"
 #include "servers/rendering/renderer_rd/effects/ss_effects.h"
 #include "servers/rendering/renderer_rd/effects/taa.h"
 #include "servers/rendering/renderer_rd/forward_clustered/scene_shader_forward_clustered.h"
@@ -128,6 +129,10 @@ public:
 		RID rt_tlas;
 		uint32_t rt_tlas_capacity = 0;
 
+		// Per pixel ray traced shadow entries (RTShadows::ENTRY_SIZE bytes each), at the internal resolution.
+		RID rt_shadow_buffer;
+		uint32_t rt_shadow_buffer_pixels = 0;
+
 		void ensure_specular();
 		bool has_specular() const { return render_buffers->has_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_SPECULAR); }
 		RID get_specular() const { return render_buffers->get_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_SPECULAR); }
@@ -187,6 +192,14 @@ private:
 	uint32_t rt_blas_builds_this_frame = 0;
 
 	void _update_raytracing_scene(const RenderDataRD *p_render_data, RenderBufferDataForwardClustered *p_rb_data, int *r_render_info);
+
+	/* Ray traced shadows */
+
+	RendererRD::RTShadows *rt_shadows = nullptr; // Only with ray tracing enabled: its shader needs ray queries.
+	RID rt_shadow_default_buffer; // Bound when a view has no ray traced shadows.
+	LocalVector<RendererRD::RTShadows::Light> rt_shadow_lights;
+
+	void _process_rt_shadows(const RenderDataRD *p_render_data, RenderBufferDataForwardClustered *p_rb_data);
 
 	void _update_render_base_uniform_set();
 	RID _setup_sdfgi_render_pass_uniform_set(RID p_albedo_texture, RID p_emission_texture, RID p_emission_aniso_texture, RID p_geom_facing_texture, const RendererRD::MaterialStorage::Samplers &p_samplers, uint32_t p_uniform_buffer_index);
