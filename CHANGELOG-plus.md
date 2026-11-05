@@ -7,6 +7,10 @@ semantic version: tags are `vMAJOR.MINOR.PATCH`, and the binary reports
 upstream base stays visible in the string. The two earlier pre-releases used
 `v4.8-beta-plus.N`. See README.md for the scheme.
 
+## Unreleased (next: v1.1.2)
+
+- **dlss-frame-token** (`d5569dfb13`) — With the separate render thread (`thread_model = 2`) the DLSS pass could set its Streamline constants twice with one frame token for the same viewport, since the token is advanced on the main thread once per iteration while the pass runs on the render thread; Streamline refused the second call (`sl::eErrorDuplicatedConstants`, logged every few hundred frames) and that frame kept the previous constants. Each DLSS viewport now takes a new token when it sees the frame index it already used, and reads the token once per pass.
+
 ## v1.1.1 — 2026-11-04
 
 Upstream base: unchanged, `cafc17a192`. A fix release (issue #15); same package layout as v1.0.0.
