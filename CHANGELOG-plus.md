@@ -7,6 +7,10 @@ semantic version: tags are `vMAJOR.MINOR.PATCH`, and the binary reports
 upstream base stays visible in the string. The two earlier pre-releases used
 `v4.8-beta-plus.N`. See README.md for the scheme.
 
+## Unreleased (next: v1.1.1)
+
+- **render-thread-shutdown** (`d4a66e6547`) — With the separate render thread (`thread_model = 2`), the main RenderingDevice is now handed back to the main thread when the render thread stops, so it is finalized cleanly at exit instead of logging a render-thread error and leaking two ObjectDB instances.
+
 ## v1.1.0 — 2026-11-03
 
 Upstream base: unchanged, `cafc17a192`. A feature release; same package layout as v1.0.0.
