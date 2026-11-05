@@ -905,6 +905,8 @@ public:
 		PagedArray<RID> decals;
 		PagedArray<RID> voxel_gi_instances;
 		PagedArray<RID> mesh_instances;
+		// Ray tracing scene: mesh and multimesh instances near the camera, in view or not.
+		PagedArray<RenderGeometryInstance *> rt_geometry_instances;
 		PagedArray<RID> fog_volumes;
 
 		struct DirectionalShadow {
@@ -923,6 +925,7 @@ public:
 			decals.clear();
 			voxel_gi_instances.clear();
 			mesh_instances.clear();
+			rt_geometry_instances.clear();
 			fog_volumes.clear();
 			for (int i = 0; i < RendererSceneRender::MAX_DIRECTIONAL_LIGHTS; i++) {
 				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES; j++) {
@@ -948,6 +951,7 @@ public:
 			decals.reset();
 			voxel_gi_instances.reset();
 			mesh_instances.reset();
+			rt_geometry_instances.reset();
 			fog_volumes.reset();
 			for (int i = 0; i < RendererSceneRender::MAX_DIRECTIONAL_LIGHTS; i++) {
 				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES; j++) {
@@ -973,6 +977,7 @@ public:
 			decals.merge_unordered(p_cull_result.decals);
 			voxel_gi_instances.merge_unordered(p_cull_result.voxel_gi_instances);
 			mesh_instances.merge_unordered(p_cull_result.mesh_instances);
+			rt_geometry_instances.merge_unordered(p_cull_result.rt_geometry_instances);
 			fog_volumes.merge_unordered(p_cull_result.fog_volumes);
 
 			for (int i = 0; i < RendererSceneRender::MAX_DIRECTIONAL_LIGHTS; i++) {
@@ -999,6 +1004,7 @@ public:
 			decals.set_page_pool(p_rid_pool);
 			voxel_gi_instances.set_page_pool(p_rid_pool);
 			mesh_instances.set_page_pool(p_rid_pool);
+			rt_geometry_instances.set_page_pool(p_geometry_instance_pool);
 			fog_volumes.set_page_pool(p_rid_pool);
 			for (int i = 0; i < RendererSceneRender::MAX_DIRECTIONAL_LIGHTS; i++) {
 				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES; j++) {
@@ -1137,6 +1143,10 @@ public:
 		SpinLock lock;
 
 		Frustum frustum;
+
+		// Ray tracing scene volume: geometry inside it goes into the TLAS whether it is in view or not.
+		bool rt_enabled = false;
+		AABB rt_aabb;
 	} cull;
 
 	struct VisibilityCullData {

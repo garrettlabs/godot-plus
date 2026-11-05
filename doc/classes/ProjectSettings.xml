@@ -3305,6 +3305,18 @@
 			[b]Note:[/b] Enabling occlusion culling has a cost on the CPU. Only enable occlusion culling if you actually plan to use it. Large open scenes with few or no objects blocking the view will generally not benefit much from occlusion culling. Large open scenes generally benefit more from mesh LOD and visibility ranges ([member GeometryInstance3D.visibility_range_begin] and [member GeometryInstance3D.visibility_range_end]) compared to occlusion culling.
 			[b]Note:[/b] Due to memory constraints, occlusion culling is not supported by default in Web export templates. It can be enabled by compiling custom Web export templates with [code]module_raycast_enabled=yes[/code].
 		</member>
+		<member name="rendering/raytracing/enabled" type="bool" setter="" getter="" default="false">
+			If [code]true[/code], the renderer builds ray tracing acceleration structures for the 3D scene: one bottom-level acceleration structure (BLAS) per mesh surface, refitted every frame for skinned and blend shape meshes, and one top-level acceleration structure (TLAS) per viewport and frame. Ray-traced effects build on them. Use [method RenderingServer.is_raytracing_enabled] to know whether it is in effect.
+			Only the Forward+ rendering method on the Vulkan rendering driver supports it, on GPUs with ray query support. Elsewhere the setting does nothing and the raster path is used.
+			[b]Note:[/b] Mesh buffers need extra usage flags, so this setting only takes effect after a restart.
+			[b]Note:[/b] Particles, 2D meshes, and line or point primitives are not part of the ray tracing scene. Alpha-tested surfaces are traced as opaque.
+		</member>
+		<member name="rendering/raytracing/scene/max_blas_builds_per_frame" type="int" setter="" getter="" default="0">
+			The maximum number of mesh acceleration structures (BLAS) built per frame. Meshes beyond the budget join the ray tracing scene on later frames, which spreads the cost of loading a large level. [code]0[/code] means no limit. Refits of deformed meshes are not limited.
+		</member>
+		<member name="rendering/raytracing/scene/max_distance" type="float" setter="" getter="" default="100.0">
+			The ray tracing scene holds the mesh instances in view plus those whose bounds intersect a cube of this half-size around the camera, in view or not, so that effects can trace geometry outside the view (shadow casters behind the camera, for example). [code]0.0[/code] uses the camera's far plane distance.
+		</member>
 		<member name="rendering/reflections/reflection_atlas/reflection_count" type="int" setter="" getter="" default="64">
 			Number of cubemaps to store in the reflection atlas. The number of [ReflectionProbe]s in a scene will be limited by this amount. A higher number requires more VRAM.
 		</member>

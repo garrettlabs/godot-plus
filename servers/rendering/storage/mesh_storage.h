@@ -90,6 +90,9 @@ public:
 
 	virtual bool mesh_needs_instance(RID p_mesh, bool p_has_skeleton) = 0;
 
+	// Whether the renderer keeps ray tracing acceleration structures for meshes (decided at startup).
+	virtual bool is_raytracing_enabled() const { return false; }
+
 	/* MESH INSTANCE */
 
 	virtual RID mesh_instance_create(RID p_base) = 0;

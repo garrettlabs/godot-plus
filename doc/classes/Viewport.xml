@@ -642,7 +642,16 @@
 		<constant name="RENDER_INFO_DRAW_CALLS_IN_FRAME" value="2" enum="RenderInfo">
 			Amount of draw calls in frame.
 		</constant>
-		<constant name="RENDER_INFO_MAX" value="3" enum="RenderInfo">
+		<constant name="RENDER_INFO_RT_TLAS_INSTANCES" value="3" enum="RenderInfo">
+			Number of instances in the ray tracing scene (top-level acceleration structure) in frame. Only reported for [constant RENDER_INFO_TYPE_VISIBLE], and only when [member ProjectSettings.rendering/raytracing/enabled] is on and supported.
+		</constant>
+		<constant name="RENDER_INFO_RT_BLAS_BUILDS" value="4" enum="RenderInfo">
+			Number of mesh acceleration structures (BLAS) fully built in frame. Only reported for [constant RENDER_INFO_TYPE_VISIBLE].
+		</constant>
+		<constant name="RENDER_INFO_RT_BLAS_REFITS" value="5" enum="RenderInfo">
+			Number of mesh acceleration structures (BLAS) of skinned or blend shape meshes refitted in frame. Only reported for [constant RENDER_INFO_TYPE_VISIBLE].
+		</constant>
+		<constant name="RENDER_INFO_MAX" value="6" enum="RenderInfo">
 			Represents the size of the [enum RenderInfo] enum.
 		</constant>
 		<constant name="RENDER_INFO_TYPE_VISIBLE" value="0" enum="RenderInfoType">

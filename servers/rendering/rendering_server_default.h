@@ -1253,6 +1253,8 @@ public:
 
 	virtual bool is_low_end() const override;
 
+	virtual bool is_raytracing_enabled() const override;
+
 	virtual void sdfgi_set_debug_probe_select(const Vector3 &p_position, const Vector3 &p_dir) override;
 
 	virtual void set_print_gpu_profile(bool p_enable) override;

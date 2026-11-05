@@ -430,6 +430,7 @@ RID RenderingDevice::blas_create(Span<AccelerationStructureGeometry> p_geometrie
 
 	acceleration_structure.draw_trackers = std::move(draw_trackers);
 	acceleration_structure.untracked_buffers = std::move(untracked_buffers);
+	acceleration_structure.allow_update = p_flags.has_flag(ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT);
 
 	RID id = acceleration_structure_owner.make_rid(acceleration_structure);
 #ifdef DEV_ENABLED
@@ -496,6 +497,11 @@ RID RenderingDevice::tlas_create(uint32_t p_max_instance_count, BitField<Acceler
 	return id;
 }
 
+bool RenderingDevice::acceleration_structure_vertex_format_is_supported(DataFormat p_format) const {
+	ERR_FAIL_INDEX_V(p_format, DATA_FORMAT_MAX, false);
+	return driver->acceleration_structure_vertex_format_is_supported(p_format);
+}
+
 Error RenderingDevice::blas_build(RID p_blas) {
 	ERR_RENDER_THREAD_GUARD_V(ERR_UNAVAILABLE);
 
@@ -510,6 +516,35 @@ Error RenderingDevice::blas_build(RID p_blas) {
 	ERR_FAIL_COND_V(err != OK, err);
 
 	draw_graph.add_blas_build(blas->driver_id, blas->scratch_buffer, blas->draw_tracker, blas->draw_trackers);
+
+	blas->invalidated = false;
+	blas->built = true;
+	_blas_remove_tlas_dependencies(blas, p_blas);
+
+	return OK;
+}
+
+Error RenderingDevice::blas_update(RID p_blas) {
+	ERR_RENDER_THREAD_GUARD_V(ERR_UNAVAILABLE);
+
+	ERR_FAIL_COND_V_MSG(draw_list.active, ERR_INVALID_PARAMETER, "Updating BLAS is forbidden during creation of a draw list.");
+	ERR_FAIL_COND_V_MSG(compute_list.active, ERR_INVALID_PARAMETER, "Updating BLAS is forbidden during creation of a compute list.");
+	ERR_FAIL_COND_V_MSG(raytracing_list.active, ERR_INVALID_PARAMETER, "Updating BLAS is forbidden during creation of a raytracing list.");
+
+	AccelerationStructure *blas = acceleration_structure_owner.get_or_null(p_blas);
+	ERR_FAIL_NULL_V_MSG(blas, ERR_INVALID_PARAMETER, "BLAS argument is not valid.");
+	ERR_FAIL_COND_V_MSG(blas->type != RDD::ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL, ERR_INVALID_PARAMETER, "Only a BLAS can be updated.");
+	ERR_FAIL_COND_V_MSG(!blas->allow_update, ERR_INVALID_PARAMETER, "The BLAS was not created with ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT.");
+
+	if (!blas->built) {
+		// Nothing to refit yet; a full build produces the same result.
+		return blas_build(p_blas);
+	}
+
+	Error err = _acceleration_structure_scratch_buffer_create(blas);
+	ERR_FAIL_COND_V(err != OK, err);
+
+	draw_graph.add_blas_build(blas->driver_id, blas->scratch_buffer, blas->draw_tracker, blas->draw_trackers, true);
 
 	blas->invalidated = false;
 	_blas_remove_tlas_dependencies(blas, p_blas);
@@ -594,7 +629,8 @@ Error RenderingDevice::tlas_build(RID p_tlas, Span<AccelerationStructureInstance
 		rdd_instance.flags = rd_instance.flags;
 
 		if (rd_instance.blas.is_valid()) {
-			ERR_FAIL_COND_V_MSG(!rd_instance.hit_sbt_range, ERR_INVALID_PARAMETER, "Instance " + itos(i) + " has an invalid hit shader binding table range.");
+			// A null hit shader binding table range is valid: ray queries do not use the table,
+			// and an instance without one uses record offset 0 in a raytracing pipeline.
 
 			AccelerationStructure *blas = acceleration_structure_owner.get_or_null(rd_instance.blas);
 			ERR_FAIL_NULL_V(blas, ERR_INVALID_PARAMETER);
@@ -9400,6 +9436,7 @@ void RenderingDevice::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("blas_create", "geometries", "flags"), &RenderingDevice::_blas_create);
 	ClassDB::bind_method(D_METHOD("tlas_create", "max_instance_count", "flags"), &RenderingDevice::tlas_create);
 	ClassDB::bind_method(D_METHOD("blas_build", "blas"), &RenderingDevice::blas_build);
+	ClassDB::bind_method(D_METHOD("blas_update", "blas"), &RenderingDevice::blas_update);
 	ClassDB::bind_method(D_METHOD("tlas_build", "tlas", "instances"), &RenderingDevice::_tlas_build);
 
 	ClassDB::bind_method(D_METHOD("hit_sbt_create", "raytracing_pipeline", "initial_hit_group_capacity"), &RenderingDevice::hit_sbt_create);

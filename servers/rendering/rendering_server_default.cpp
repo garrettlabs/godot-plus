@@ -399,6 +399,11 @@ bool RenderingServerDefault::is_low_end() const {
 	return RendererCompositor::is_low_end();
 }
 
+bool RenderingServerDefault::is_raytracing_enabled() const {
+	// Decided once on the render thread at startup, safe to read from any thread.
+	return RSG::mesh_storage != nullptr && RSG::mesh_storage->is_raytracing_enabled();
+}
+
 Size2i RenderingServerDefault::get_maximum_viewport_size() const {
 	if (RSG::utilities) {
 		return RSG::utilities->get_maximum_viewport_size();

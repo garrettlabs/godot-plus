@@ -158,6 +158,12 @@ void RenderForwardClustered::RenderBufferDataForwardClustered::free_data() {
 	if (!render_sdfgi_uniform_set.is_null() && RD::get_singleton()->uniform_set_is_valid(render_sdfgi_uniform_set)) {
 		RD::get_singleton()->free_rid(render_sdfgi_uniform_set);
 	}
+
+	if (rt_tlas.is_valid()) {
+		RD::get_singleton()->free_rid(rt_tlas);
+		rt_tlas = RID();
+		rt_tlas_capacity = 0;
+	}
 }
 
 void RenderForwardClustered::RenderBufferDataForwardClustered::configure(RenderSceneBuffersRD *p_render_buffers) {
@@ -1976,6 +1982,153 @@ void RenderForwardClustered::_render_3d_upscaling(const RenderDataRD *p_render_d
 	}
 }
 
+void RenderForwardClustered::_update_raytracing_scene(const RenderDataRD *p_render_data, RenderBufferDataForwardClustered *p_rb_data, int *r_render_info) {
+	RendererRD::MeshStorage *mesh_storage = RendererRD::MeshStorage::get_singleton();
+	const PagedArray<RenderGeometryInstance *> &instances = *p_render_data->rt_instances;
+	const uint32_t camera_layers = p_render_data->scene_data->camera_visible_layers;
+
+	// One BLAS build budget per frame, shared by all viewports.
+	const uint64_t frame = RSG::rasterizer->get_frame_number();
+	if (rt_build_budget_frame != frame) {
+		rt_build_budget_frame = frame;
+		rt_blas_builds_this_frame = 0;
+	}
+	const int max_builds = GLOBAL_GET_CACHED(int, "rendering/raytracing/scene/max_blas_builds_per_frame");
+
+	uint32_t builds = 0;
+	uint32_t refits = 0;
+	rt_tlas_instances.clear();
+
+	for (uint32_t i = 0; i < instances.size(); i++) {
+		GeometryInstanceForwardClustered *inst = static_cast<GeometryInstanceForwardClustered *>(instances[i]);
+		if (inst->surface_caches == nullptr) {
+			continue;
+		}
+
+		const float *multimesh_data = nullptr;
+		uint32_t multimesh_stride = 0;
+		uint32_t instance_count = 1;
+		const bool is_multimesh = inst->data->base_type == RSE::INSTANCE_MULTIMESH;
+		if (is_multimesh && !mesh_storage->multimesh_get_rt_transforms(inst->data->base, multimesh_data, multimesh_stride, instance_count)) {
+			continue;
+		}
+		if (instance_count == 0) {
+			continue;
+		}
+
+		const RSE::ShadowCastingSetting cast_shadows = inst->data->cast_shadows;
+		const bool in_view = cast_shadows != RSE::SHADOW_CASTING_SETTING_SHADOWS_ONLY && (inst->layer_mask & camera_layers);
+
+		// A surface can have several caches (material next passes); merge their masks.
+		rt_surface_masks.clear();
+		for (const GeometryInstanceSurfaceDataCache *sc = inst->surface_caches; sc; sc = sc->next) {
+			uint8_t mask = 0;
+			if ((sc->flags & GeometryInstanceSurfaceDataCache::FLAG_PASS_SHADOW) && cast_shadows != RSE::SHADOW_CASTING_SETTING_OFF) {
+				mask |= RT_INSTANCE_MASK_SHADOW_CASTER;
+			}
+			if ((sc->flags & (GeometryInstanceSurfaceDataCache::FLAG_PASS_OPAQUE | GeometryInstanceSurfaceDataCache::FLAG_PASS_ALPHA)) && in_view) {
+				mask |= RT_INSTANCE_MASK_VISIBLE;
+			}
+			bool found = false;
+			for (Pair<uint32_t, uint8_t> &entry : rt_surface_masks) {
+				if (entry.first == sc->surface_index) {
+					entry.second |= mask;
+					found = true;
+					break;
+				}
+			}
+			if (!found) {
+				rt_surface_masks.push_back(Pair<uint32_t, uint8_t>(sc->surface_index, mask));
+			}
+		}
+
+		for (const GeometryInstanceSurfaceDataCache *sc = inst->surface_caches; sc; sc = sc->next) {
+			uint8_t mask = 0;
+			for (Pair<uint32_t, uint8_t> &entry : rt_surface_masks) {
+				if (entry.first == sc->surface_index) {
+					mask = entry.second;
+					entry.second = 0; // Only the first cache of a surface adds instances.
+					break;
+				}
+			}
+			if (mask == 0) {
+				continue;
+			}
+
+			const bool can_build = max_builds <= 0 || rt_blas_builds_this_frame < uint32_t(max_builds);
+			RendererRD::MeshStorage::RTBLASOperation operation = RendererRD::MeshStorage::RT_BLAS_NONE;
+			Transform3D position_transform;
+			RID blas;
+			bool deformed = false;
+			if (inst->mesh_instance.is_valid()) {
+				blas = mesh_storage->mesh_instance_surface_get_blas(inst->mesh_instance, sc->surface_index, can_build, operation, deformed);
+			}
+			if (!deformed) {
+				blas = mesh_storage->mesh_surface_get_blas(sc->surface, can_build, operation, position_transform);
+			}
+			if (operation == RendererRD::MeshStorage::RT_BLAS_BUILT) {
+				builds++;
+				rt_blas_builds_this_frame++;
+			} else if (operation == RendererRD::MeshStorage::RT_BLAS_REFITTED) {
+				refits++;
+			}
+			if (blas.is_null()) {
+				continue;
+			}
+
+			RD::AccelerationStructureInstance rt_instance;
+			rt_instance.blas = blas;
+			rt_instance.mask = mask;
+			if (inst->data->cast_double_sided_shadows) {
+				rt_instance.flags.set_flag(RD::ACCELERATION_STRUCTURE_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT);
+			}
+			if (inst->mirror) {
+				// Keep the facing of mirrored instances consistent with the raster path.
+				rt_instance.flags.set_flag(RD::ACCELERATION_STRUCTURE_INSTANCE_TRIANGLE_FLIP_FACING_BIT);
+			}
+
+			if (is_multimesh) {
+				for (uint32_t j = 0; j < instance_count; j++) {
+					const float *d = multimesh_data + uint64_t(j) * multimesh_stride;
+					Transform3D xform;
+					xform.basis.rows[0] = Vector3(d[0], d[1], d[2]);
+					xform.basis.rows[1] = Vector3(d[4], d[5], d[6]);
+					xform.basis.rows[2] = Vector3(d[8], d[9], d[10]);
+					xform.origin = Vector3(d[3], d[7], d[11]);
+					rt_instance.transform = inst->transform * xform * position_transform;
+					rt_instance.id = rt_tlas_instances.size() & 0xFFFFFF;
+					rt_tlas_instances.push_back(rt_instance);
+				}
+			} else {
+				rt_instance.transform = inst->transform * position_transform;
+				rt_instance.id = rt_tlas_instances.size() & 0xFFFFFF;
+				rt_tlas_instances.push_back(rt_instance);
+			}
+		}
+	}
+
+	if (p_rb_data->rt_tlas.is_null() || rt_tlas_instances.size() > p_rb_data->rt_tlas_capacity) {
+		if (p_rb_data->rt_tlas.is_valid()) {
+			RD::get_singleton()->free_rid(p_rb_data->rt_tlas);
+		}
+		p_rb_data->rt_tlas_capacity = Math::next_power_of_2(MAX(rt_tlas_instances.size(), 256u));
+		p_rb_data->rt_tlas = RD::get_singleton()->tlas_create(p_rb_data->rt_tlas_capacity, RD::ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT);
+		if (p_rb_data->rt_tlas.is_null()) {
+			p_rb_data->rt_tlas_capacity = 0;
+			ERR_FAIL_MSG("Failed to create the ray tracing scene (TLAS).");
+		}
+	}
+
+	Error err = RD::get_singleton()->tlas_build(p_rb_data->rt_tlas, Span<RD::AccelerationStructureInstance>(rt_tlas_instances.ptr(), rt_tlas_instances.size()));
+	ERR_FAIL_COND_MSG(err != OK, "Failed to build the ray tracing scene (TLAS).");
+
+	if (r_render_info) {
+		r_render_info[RSE::VIEWPORT_RENDER_INFO_RT_TLAS_INSTANCES] += rt_tlas_instances.size();
+		r_render_info[RSE::VIEWPORT_RENDER_INFO_RT_BLAS_BUILDS] += builds;
+		r_render_info[RSE::VIEWPORT_RENDER_INFO_RT_BLAS_REFITS] += refits;
+	}
+}
+
 void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Color &p_default_bg_color) {
 	GodotProfileZone("RenderForwardClustered::_render_scene");
 	scene_state.used_uniform_buffer_count = 0;
@@ -2185,6 +2338,13 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	_fill_instance_data(RENDER_LIST_ALPHA, render_info);
 
 	RD::get_singleton()->draw_command_end_label();
+
+	if (rb_data.is_valid() && p_render_data->rt_instances != nullptr) {
+		RENDER_TIMESTAMP("Build Ray Tracing Scene");
+		RD::get_singleton()->draw_command_begin_label("Build Ray Tracing Scene");
+		_update_raytracing_scene(p_render_data, rb_data.ptr(), render_info);
+		RD::get_singleton()->draw_command_end_label();
+	}
 
 	if (!is_reflection_probe) {
 		if (using_voxelgi) {

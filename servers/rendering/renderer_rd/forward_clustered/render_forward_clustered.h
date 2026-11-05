@@ -126,6 +126,10 @@ public:
 
 		RID render_sdfgi_uniform_set;
 
+		// Ray tracing scene (TLAS) of this view, rebuilt every frame when ray tracing is enabled.
+		RID rt_tlas;
+		uint32_t rt_tlas_capacity = 0;
+
 		void ensure_specular();
 		bool has_specular() const { return render_buffers->has_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_SPECULAR); }
 		RID get_specular() const { return render_buffers->get_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_SPECULAR); }
@@ -179,6 +183,15 @@ private:
 	RID render_base_uniform_set;
 
 	uint64_t lightmap_texture_array_version = 0xFFFFFFFF;
+
+	/* Ray tracing scene */
+
+	LocalVector<RD::AccelerationStructureInstance> rt_tlas_instances;
+	LocalVector<Pair<uint32_t, uint8_t>> rt_surface_masks; // Surface index, instance mask.
+	uint64_t rt_build_budget_frame = UINT64_MAX;
+	uint32_t rt_blas_builds_this_frame = 0;
+
+	void _update_raytracing_scene(const RenderDataRD *p_render_data, RenderBufferDataForwardClustered *p_rb_data, int *r_render_info);
 
 	void _update_render_base_uniform_set();
 	RID _setup_sdfgi_render_pass_uniform_set(RID p_albedo_texture, RID p_emission_texture, RID p_emission_aniso_texture, RID p_geom_facing_texture, const RendererRD::MaterialStorage::Samplers &p_samplers, uint32_t p_uniform_buffer_index);
@@ -860,6 +873,12 @@ protected:
 	virtual void _render_particle_collider_heightfield(RID p_fb, const Transform3D &p_cam_transform, const Projection &p_cam_projection, const PagedArray<RenderGeometryInstance *> &p_instances) override;
 
 public:
+	// Instance mask bits of the ray tracing scene, for ray queries to select what they hit.
+	enum RaytracingInstanceMask {
+		RT_INSTANCE_MASK_SHADOW_CASTER = 1 << 0, // Casts shadows (cast_shadow is not off, and the material casts).
+		RT_INSTANCE_MASK_VISIBLE = 1 << 1, // Rendered in this view (not shadows only, and in a visible layer).
+	};
+
 	static RenderForwardClustered *get_singleton() { return singleton; }
 
 	ClusterBuilderSharedDataRD *get_cluster_builder_shared() { return &cluster_builder_shared; }

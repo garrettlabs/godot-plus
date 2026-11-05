@@ -79,6 +79,9 @@ public:
 
 	RenderingServerTypes::RenderInfo *render_info = nullptr;
 
+	// Geometry instances for the ray tracing scene (TLAS), a superset of the visible instances; null when ray tracing is off.
+	const PagedArray<RenderGeometryInstance *> *rt_instances = nullptr;
+
 	/* Viewport data */
 	bool transparent_bg = false;
 	Rect2i render_region;
