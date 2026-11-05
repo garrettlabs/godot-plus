@@ -715,7 +715,11 @@ void PhysXFlow3D::_step(double p_delta) {
 	if (gas.has_volume()) {
 		region = region.has_volume() ? region.merge(gas.grow(1.0)) : gas.grow(1.0);
 	}
-	_gather_colliders(region, emitters);
+	// The solids are those the last physics step gathered in this region (see _notification).
+	collider_region = region;
+	for (const FlowBackend::Emitter &solid : cached_solids) {
+		emitters.push_back(solid);
+	}
 	_gather_scatter_lights();
 	if (floor_enabled) {
 		// The FLOOR: one wide solid box whose top is floor_height, under everything this grid can reach. A solid
@@ -909,10 +913,20 @@ void PhysXFlow3D::_notification(int p_what) {
 		case NOTIFICATION_ENTER_WORLD: {
 			_start();
 			set_process_internal(true);
+			set_physics_process_internal(true);
 		} break;
 		case NOTIFICATION_EXIT_WORLD: {
+			set_physics_process_internal(false);
 			set_process_internal(false);
+			cached_solids.clear();
+			collider_region = AABB();
 			_stop();
+		} break;
+		case NOTIFICATION_INTERNAL_PHYSICS_PROCESS: {
+			// The space is asked here, inside the physics server's sync window, so the query holds with
+			// physics on its own thread (run_on_separate_thread) as on the main one; _step reads the result.
+			cached_solids.clear();
+			_gather_colliders(collider_region, cached_solids);
 		} break;
 		case NOTIFICATION_INTERNAL_PROCESS: {
 			// Once per frame, as Flow is meant to be driven: its own fixed-rate
