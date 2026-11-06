@@ -4573,9 +4573,17 @@ bool RendererSceneCull::free(RID p_rid) {
 	} else if (instance_owner.owns(p_rid)) {
 		// delete the instance
 
-		update_dirty_instances();
-
+		// The materials this instance refers to may already be freed (the owning node releases them before the
+		// instance), and a freed RID still looks valid. Drop them before flushing a pending update, which would
+		// otherwise look them up. The instance is torn down below anyway.
 		Instance *instance = instance_owner.get_or_null(p_rid);
+		if (instance) {
+			instance->materials.clear();
+			instance->material_override = RID();
+			instance->material_overlay = RID();
+		}
+
+		update_dirty_instances();
 
 		instance_geometry_set_lightmap(p_rid, RID(), Rect2(), 0);
 		instance_set_scenario(p_rid, RID());
