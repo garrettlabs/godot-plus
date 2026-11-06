@@ -34,6 +34,11 @@ Upstream base: unchanged, `cafc17a192`. Ray tracing in the Forward+ renderer, Vu
   Transparent surfaces receive no ray-traced shadows, light caster and cull masks are not applied, and
   geometry a material displaces in its vertex shader casts its unmodified shape.
 
+- **fix/flow-colliders-in-physics-step** (`8dca5ab80e`, PR #18) — fixes #17: Flow grids now gather their colliders inside the physics step, so they keep their solids when physics runs on its own thread (`3d/run_on_separate_thread`) instead of failing to access the space state.
+
+- **multimesh-interpolation-thread** (`f73f42a48c`) — fixes #16: `RenderingServer` tick and pre-draw are queued to the render thread, so MultiMesh physics interpolation no longer updates buffers from the wrong thread (`buffer_update` errors with `thread_model = 2`).
+
+- **instance-free-material-order** (`f3e52f130b`) — fixes #19 (also godotengine/godot#85817): an instance's materials are cleared before its pending update when it is freed, so freeing a node with surface material overrides no longer logs `Parameter "material" is null` errors.
 ## v1.1.1 — 2026-11-04
 
 Upstream base: unchanged, `cafc17a192`. A fix release (issue #15 and the DLSS frame token with the separate render thread); same package layout as v1.0.0. Re-cut the same evening with the DLSS fix; the first v1.1.1 package (`81470f4a8f`) carried only the #15 fix.
