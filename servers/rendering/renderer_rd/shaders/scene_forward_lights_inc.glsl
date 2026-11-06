@@ -27,6 +27,14 @@ half D_GGX(half NoH, half roughness, hvec3 n, hvec3 h) {
 	return saturateHalf(d);
 }
 
+// Ray traced shadows (USE_RT_SHADOWS) are defined by the renderer only when ray tracing is in effect, so
+// that the forward shaders carry no ray tracing code, branches or light data reads when it is off.
+#ifdef USE_RT_SHADOWS
+#define LIGHT_HAS_SHADOW_MAP(m_light) ((m_light).rt_shadow_index == 0xFFFFFFFFu)
+#else
+#define LIGHT_HAS_SHADOW_MAP(m_light) true
+#endif
+
 #ifdef LIGHT_TRANSMITTANCE_USED
 #ifdef SSS_MODE_SKIN
 hvec3 SSS_skin(half NdotL, half transmittance_depth, half transmittance_z, half transmittance_boost, hvec4 transmittance_color, hvec3 light_color) {
@@ -644,7 +652,7 @@ void light_process_omni(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 	half transmittance_z = transmittance_depth; //no transmittance by default
 	transmittance_color.a *= omni_attenuation;
 #ifndef SHADOWS_DISABLED
-	if (omni_lights.data[idx].shadow_opacity > 0.001 && omni_lights.data[idx].rt_shadow_index == 0xFFFFFFFFu) {
+	if (omni_lights.data[idx].shadow_opacity > 0.001 && LIGHT_HAS_SHADOW_MAP(omni_lights.data[idx])) {
 		// Redo shadowmapping, but shrink the model a bit to avoid artifacts.
 		vec2 texel_size = scene_data_block.data.shadow_atlas_pixel_size;
 		vec4 uv_rect = omni_lights.data[idx].atlas_rect;
@@ -920,7 +928,7 @@ void light_process_spot(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 	half transmittance_z = transmittance_depth;
 	transmittance_color.a *= spot_attenuation;
 #ifndef SHADOWS_DISABLED
-	if (spot_lights.data[idx].shadow_opacity > 0.001 && spot_lights.data[idx].rt_shadow_index == 0xFFFFFFFFu) {
+	if (spot_lights.data[idx].shadow_opacity > 0.001 && LIGHT_HAS_SHADOW_MAP(spot_lights.data[idx])) {
 		vec4 splane = (spot_lights.data[idx].shadow_matrix * vec4(vertex - vec3(normal) * spot_lights.data[idx].transmittance_bias, 1.0));
 		splane /= splane.w;
 

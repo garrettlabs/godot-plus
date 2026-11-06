@@ -5624,6 +5624,11 @@ RenderForwardClustered::RenderForwardClustered() {
 			defines += "\n#define SPECULAR_OCCLUSION_DISABLED\n";
 		}
 
+		if (RendererRD::MeshStorage::get_singleton()->is_raytracing_enabled()) {
+			// Without it the shaders carry no ray traced shadow code, which costs GPU time even when no light is traced.
+			defines += "\n#define USE_RT_SHADOWS\n";
+		}
+
 #ifdef MODULE_TEXTURE_STREAMING_ENABLED
 		bool texture_streaming = GLOBAL_GET("rendering/textures/streaming/enabled");
 		if (texture_streaming) {

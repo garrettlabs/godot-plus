@@ -1048,8 +1048,7 @@ layout(location = 2) out vec2 motion_vector;
 
 #include "../scene_forward_gi_inc.glsl"
 
-#define USE_RT_SHADOWS
-
+#ifdef USE_RT_SHADOWS
 half rt_shadow_get(uint p_slot) {
 	uvec2 pixel = uvec2(gl_FragCoord.xy);
 	uvec4 entries = rt_shadow_buffer.data[pixel.y * uint(scene_data_block.data.viewport_size.x) + pixel.x];
@@ -1067,6 +1066,7 @@ half rt_shadow_get(uint p_slot) {
 	}
 	return half(1.0); // Not traced for this pixel (more lights than entries, or outside the light).
 }
+#endif // USE_RT_SHADOWS
 
 #include "../scene_forward_lights_inc.glsl"
 
