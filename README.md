@@ -17,6 +17,7 @@ Upstream's own README follows below under *Godot Engine*.
 | **Screen-space contact shadows for omni and spot lights** | `renderer_rd/effects/ss_effects.*`, `light_storage.*`, `scene_forward_lights_inc.glsl` | Upstream traces them for directional lights only. `rendering/lights_and_shadows/contact_shadow/max_positional_lights` (default 4) caps the per-frame passes; the nearest lights that allow them get a layer. |
 | **PhysX 5.10 physics backend** (`physics/3d/physics_engine = "PhysX"`) with GPU rigid-body dynamics, vehicles, cloth, fluids, water, Flow gas, Blast destruction and a traced GI | `modules/godot_physx/` | Wild Ox Studios' module from [uno1982/godot](https://github.com/uno1982/godot), imported verbatim and ported to 4.8. The PhysX SDK is built out of tree (see Building). Jolt remains the default physics engine; GPU dynamics (`physics/physx_3d/simulation/gpu_dynamics`) pays off with thousands of dynamic bodies and costs a little otherwise. Flow and Blast are built in since `ed658b07a8` (releases from v1.0.0 on). |
 | **Static shadow caching** for omni and spot lights: `GeometryInstance3D.static_shadow_caster` marks geometry that never moves and a light then redraws only moving casters over a cached depth of the static ones | `renderer_scene_cull.*`, `renderer_rd/storage_rd/light_storage.*`, `forward_clustered/render_forward_clustered.*` | Forward+, spot and dual-paraboloid omni lights; `rendering/lights_and_shadows/positional_shadow/static_shadow_cache` switches it off. |
+| **Ray tracing** in Forward+ (Vulkan): acceleration structures for the scene and ray-traced shadows for omni and spot lights, in place of their shadow maps | `renderer_rd/` ray-query passes, `RenderingDevice.blas_update()`, `rendering/raytracing/*` | Off by default (`rendering/raytracing/enabled`, restart required); needs a GPU with ray queries. D3D12 and other GPUs keep shadow maps. Transparent surfaces receive no traced shadows. |
 | **Profiling zones** for animation, skeletons, scene tree and the 3D render path | `scene/animation`, `scene/3d`, `scene/main`, `servers/rendering` | Active in `profiler=tracy` builds only. A Tracy capture can then attribute a frame to shadow culling, draw submission, animation and script instead of one opaque zone. |
 
 Everything else is upstream Godot 4.8-beta at the commit `master` points to.
@@ -27,7 +28,7 @@ Everything else is upstream Godot 4.8-beta at the commit `master` points to.
 |---|---|
 | `main` | The engine. Upstream `master` plus every patch, merged `--no-ff`; builds and releases come from here. Upstream is pulled in at chosen commits, not continuously, so a build of `main` is reproducible. |
 | `master` | Mirror of `godotengine/godot` master. Never patched. |
-| `streamline-dlss`, `contact-shadows-positional`, `physx5-module`, `profiling-zones`, `plus-versioning` | One patch each, cut from `master` and merged into `main` once they build and pass testing. |
+| `streamline-dlss`, `contact-shadows-positional`, `physx5-module`, `profiling-zones`, `plus-versioning`, `static-shadow-cache`, `rt-acceleration-structures`, `rt-shadows` | One patch each, cut from `master` and merged into `main` once they build and pass testing. |
 
 ## Building (Windows)
 

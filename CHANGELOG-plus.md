@@ -7,9 +7,9 @@ semantic version: tags are `vMAJOR.MINOR.PATCH`, and the binary reports
 upstream base stays visible in the string. The two earlier pre-releases used
 `v4.8-beta-plus.N`. See README.md for the scheme.
 
-## Unreleased (next: v1.2.0)
+## v1.2.0 — 2026-11-05
 
-Upstream base: unchanged, `cafc17a192`. Ray tracing in the Forward+ renderer, Vulkan only, off by default.
+Upstream base: unchanged, `cafc17a192`. A MINOR release: ray tracing in the Forward+ renderer (acceleration structures and ray-traced omni/spot shadows, Vulkan only, off by default) plus three fixes; same package layout as v1.0.0.
 
 - **rt-acceleration-structures** (`23adaf0e7c`, `080e5e99d7`) — ray tracing acceleration structures for
   the 3D scene, behind `rendering/raytracing/enabled` (off by default, restart required; in effect with
@@ -39,6 +39,7 @@ Upstream base: unchanged, `cafc17a192`. Ray tracing in the Forward+ renderer, Vu
 - **multimesh-interpolation-thread** (`f73f42a48c`) — fixes #16: `RenderingServer` tick and pre-draw are queued to the render thread, so MultiMesh physics interpolation no longer updates buffers from the wrong thread (`buffer_update` errors with `thread_model = 2`).
 
 - **instance-free-material-order** (`f3e52f130b`) — fixes #19 (also godotengine/godot#85817): an instance's materials are cleared before its pending update when it is freed, so freeing a node with surface material overrides no longer logs `Parameter "material" is null` errors.
+
 ## v1.1.1 — 2026-11-04
 
 Upstream base: unchanged, `cafc17a192`. A fix release (issue #15 and the DLSS frame token with the separate render thread); same package layout as v1.0.0. Re-cut the same evening with the DLSS fix; the first v1.1.1 package (`81470f4a8f`) carried only the #15 fix.
