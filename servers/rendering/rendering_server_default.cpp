@@ -456,13 +456,31 @@ void RenderingServerDefault::draw(bool p_present, double frame_step) {
 	}
 }
 
-void RenderingServerDefault::tick() {
+// Interpolation tick and pre_draw update MultiMesh and other GPU buffers, so with a render thread they must be queued
+// (ahead of `_draw`) instead of running on the main thread.
+void RenderingServerDefault::_tick() {
 	RSG::canvas->tick();
 	RSG::scene->tick();
 }
 
-void RenderingServerDefault::pre_draw(bool p_will_draw) {
+void RenderingServerDefault::_pre_draw(bool p_will_draw) {
 	RSG::scene->pre_draw(p_will_draw);
+}
+
+void RenderingServerDefault::tick() {
+	if (create_thread) {
+		command_queue.push(this, &RenderingServerDefault::_tick);
+	} else {
+		_tick();
+	}
+}
+
+void RenderingServerDefault::pre_draw(bool p_will_draw) {
+	if (create_thread) {
+		command_queue.push(this, &RenderingServerDefault::_pre_draw, p_will_draw);
+	} else {
+		_pre_draw(p_will_draw);
+	}
 }
 
 void RenderingServerDefault::_call_on_render_thread(const Callable &p_callable) {
