@@ -139,6 +139,7 @@ private:
 	RD::PipelineType pipeline_type = RD::PIPELINE_TYPE_RASTERIZATION;
 
 	String name;
+	bool has_ray_query_source = false;
 
 	CharString base_compute_defines;
 
@@ -267,6 +268,8 @@ public:
 	static PackedByteArray save_shader_cache_bytes(const LocalVector<int> &p_variants, const Vector<Vector<uint8_t>> &p_variant_data);
 
 	Vector<String> version_build_variant_stage_sources(RID p_version, int p_variant);
+	// Whether any enabled variant of this version declares the ray query extension after its defines are applied.
+	bool version_uses_ray_query(RID p_version);
 	RenderingServerTypes::ShaderNativeSourceCode version_get_native_source_code(RID p_version);
 	String version_get_cache_file_relative_path(RID p_version, int p_group, const String &p_api_name);
 
