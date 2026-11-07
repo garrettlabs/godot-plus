@@ -13,6 +13,8 @@ upstream base stays visible in the string. The two earlier pre-releases used
 
 - **rt-fog-shadows** (`cb402b0691`, `1cc2fdefde`) — volumetric fog is shadowed by ray traced lights (fixes #20). With ray tracing on, omni and spot lights chosen for ray traced shadows have no shadow map, but the volumetric fog compute still read its light visibility from the shadow atlas, so fog was lit as if no wall or prop stood in the way (a beam through a slot was not cut by the wall around it). The fog pass now traces one ray from each fog cell to each traced light against the same acceleration structure as the opaque pass; lights without a traced slot and directional lights keep their shadow maps. The ray query code is compiled in only when ray tracing is in effect, so with it off the fog shader is unchanged. Fog shadows from traced lights are hard-edged where a shadow map blurs them and no longer leak a little light behind thin walls.
 
+- **sdfgi-rt-binding** (`62607e9002`) — SDFGI works again (fixes #21, a v1.2.0 regression). The SDFGI voxelization shader variant declared the ray traced shadow buffer binding but its uniform set did not provide it, so every voxelization draw was dropped with "Binding (39), set (1) was not provided" and the cascades stayed empty or stale (visible with any `Environment.sdfgi_enabled`, and when a `PXTGI3D` enables it).
+
 ## v1.2.0 — 2026-11-05
 
 Upstream base: unchanged, `cafc17a192`. A MINOR release: ray tracing in the Forward+ renderer (acceleration structures and ray-traced omni/spot shadows, Vulkan only, off by default) plus three fixes; same package layout as v1.0.0.
