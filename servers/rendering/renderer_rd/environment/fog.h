@@ -49,6 +49,9 @@ class Fog : public RendererFog {
 private:
 	static Fog *singleton;
 
+	bool rt_shadows = false; // The process shader traces lights with ray traced shadows.
+	RID rt_dummy_tlas; // Stands in for the scene's acceleration structure when none was built.
+
 	static int _get_fog_shader_group();
 	static int _get_fog_variant();
 	static int _get_fog_process_variant(int p_idx);
@@ -188,6 +191,9 @@ private:
 			float cam_rotation[12];
 			float to_prev_view[16];
 			float radiance_inverse_xform[12];
+
+			float cam_origin[3];
+			uint32_t rt_instance_mask;
 		};
 
 		VolumetricFogProcessShaderRD process_shader;
@@ -319,6 +325,7 @@ public:
 
 		RID fog_uniform_set;
 		RID copy_uniform_set;
+		RID rt_tlas_in_sets; // The acceleration structure the process sets were created with.
 
 		struct {
 			RID process_uniform_set_density;
@@ -361,6 +368,8 @@ public:
 		RID area_light_atlas;
 		RID directional_shadow_depth;
 		RID directional_light_buffer;
+		RID rt_tlas; // Top level acceleration structure of this frame, for lights with ray traced shadows. Invalid without ray tracing.
+		uint32_t rt_instance_mask = 0; // Instances that cast shadows.
 
 		// Objects related to our render buffer
 		Ref<VolumetricFog> vfog;
