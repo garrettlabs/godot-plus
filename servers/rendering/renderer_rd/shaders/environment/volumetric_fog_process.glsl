@@ -1,8 +1,12 @@
 #[compute]
 
-#version 450
+#version 460
 
 #VERSION_DEFINES
+
+#ifdef USE_RT_SHADOWS
+#extension GL_EXT_ray_query : require
+#endif
 
 #ifdef USE_VULKAN_MEMORY_MODEL
 #pragma use_vulkan_memory_model
@@ -191,6 +195,9 @@ layout(set = 0, binding = 15, std140) uniform Params {
 	mat4 to_prev_view;
 
 	mat3 radiance_inverse_xform;
+
+	vec3 cam_origin;
+	uint rt_instance_mask;
 }
 params;
 #ifndef MODE_COPY
@@ -220,6 +227,28 @@ layout(set = 0, binding = 20) uniform texture2D sky_texture;
 #endif // MODE_COPY
 
 layout(set = 0, binding = 21) uniform texture2D area_light_atlas;
+
+#if defined(USE_RT_SHADOWS) && !defined(MODE_COPY)
+layout(set = 0, binding = 22) uniform accelerationStructureEXT tlas;
+
+// Lights with ray traced shadows have no shadow map: trace from the point to the light instead.
+// Both positions are in view space; the scene's acceleration structure is in world space.
+float rt_shadow_visibility(vec3 p_view_pos, vec3 p_light_view_pos, float p_near) {
+	vec3 origin = mat3(params.cam_rotation) * p_view_pos + params.cam_origin;
+	vec3 target = mat3(params.cam_rotation) * p_light_view_pos + params.cam_origin;
+	vec3 to_target = target - origin;
+	float dist = length(to_target);
+	float t_max = dist - p_near;
+	if (t_max <= 0.0) {
+		return 1.0;
+	}
+	rayQueryEXT rq;
+	rayQueryInitializeEXT(rq, tlas, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT, params.rt_instance_mask, origin, 0.0, to_target / dist, t_max);
+	while (rayQueryProceedEXT(rq)) {
+	}
+	return rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT ? 0.0 : 1.0;
+}
+#endif
 
 float get_depth_at_pos(float cell_depth_size, int z) {
 	float d = float(z) * cell_depth_size + cell_depth_size * 0.5; //center of voxels
@@ -496,7 +525,16 @@ void main() {
 
 						vec3 light = omni_lights.data[light_index].color;
 
-						if (omni_lights.data[light_index].shadow_opacity > 0.001) {
+						bool traced = false;
+#if defined(USE_RT_SHADOWS) && !defined(MODE_COPY)
+						if (omni_lights.data[light_index].rt_shadow_index != 0xFFFFFFFFu) {
+							// Ray traced: there is nothing in the shadow atlas for this light.
+							traced = true;
+							float rt_visible = rt_shadow_visibility(view_pos, light_pos, max(0.005 / omni_lights.data[light_index].inv_radius, omni_lights.data[light_index].size));
+							shadow_attenuation = mix(1.0 - omni_lights.data[light_index].shadow_opacity, 1.0, rt_visible);
+						}
+#endif
+						if (!traced && omni_lights.data[light_index].shadow_opacity > 0.001) {
 							//has shadow
 							vec4 uv_rect = omni_lights.data[light_index].atlas_rect;
 							vec2 flip_offset = omni_lights.data[light_index].direction.xy;
@@ -570,7 +608,16 @@ void main() {
 
 						vec3 light = spot_lights.data[light_index].color;
 
-						if (spot_lights.data[light_index].shadow_opacity > 0.001) {
+						bool traced = false;
+#if defined(USE_RT_SHADOWS) && !defined(MODE_COPY)
+						if (spot_lights.data[light_index].rt_shadow_index != 0xFFFFFFFFu) {
+							// Ray traced: there is nothing in the shadow atlas for this light.
+							traced = true;
+							float rt_visible = rt_shadow_visibility(view_pos, light_pos, max(0.005 / spot_lights.data[light_index].inv_radius, spot_lights.data[light_index].size));
+							shadow_attenuation = mix(1.0 - spot_lights.data[light_index].shadow_opacity, 1.0, rt_visible);
+						}
+#endif
+						if (!traced && spot_lights.data[light_index].shadow_opacity > 0.001) {
 							//has shadow
 							vec4 uv_rect = spot_lights.data[light_index].atlas_rect;
 

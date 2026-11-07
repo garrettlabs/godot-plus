@@ -33,6 +33,7 @@
 #include "servers/rendering/renderer_rd/cluster_builder_rd.h"
 #include "servers/rendering/renderer_rd/renderer_scene_render_rd.h"
 #include "servers/rendering/renderer_rd/storage_rd/material_storage.h"
+#include "servers/rendering/renderer_rd/storage_rd/mesh_storage.h"
 #include "servers/rendering/renderer_rd/storage_rd/texture_storage.h"
 #include "servers/rendering/rendering_server_default.h"
 
@@ -306,6 +307,11 @@ ALBEDO = vec3(1.0);
 		if (p_is_using_radiance_octmap_array) {
 			defines += "\n#define USE_RADIANCE_OCTMAP_ARRAY \n";
 		}
+		rt_shadows = RendererRD::MeshStorage::get_singleton()->is_raytracing_enabled();
+		if (rt_shadows) {
+			// Lights with ray traced shadows have no shadow map; the fog traces them itself.
+			defines += "\n#define USE_RT_SHADOWS\n";
+		}
 		Vector<ShaderRD::VariantDefine> volumetric_fog_modes;
 		int shader_group = 0;
 		for (int vk_memory_model = 0; vk_memory_model < 2; vk_memory_model++) {
@@ -342,6 +348,10 @@ void Fog::free_fog_shader() {
 	}
 	if (volumetric_fog.volume_ubo.is_valid()) {
 		RD::get_singleton()->free_rid(volumetric_fog.volume_ubo);
+	}
+	if (rt_dummy_tlas.is_valid()) {
+		RD::get_singleton()->free_rid(rt_dummy_tlas);
+		rt_dummy_tlas = RID();
 	}
 	if (volumetric_fog.params_ubo.is_valid()) {
 		RD::get_singleton()->free_rid(volumetric_fog.params_ubo);
@@ -795,6 +805,10 @@ void Fog::volumetric_fog_update(const VolumetricFogSettings &p_settings, const P
 		RD::get_singleton()->compute_list_end();
 	}
 
+	if (rt_shadows && fog->rt_tlas_in_sets != p_settings.rt_tlas) {
+		// The scene's acceleration structure was replaced (or appeared); the sets still point at the old one.
+		fog->sync_gi_dependent_sets_validity(true);
+	}
 	bool gi_dependent_sets_valid = fog->sync_gi_dependent_sets_validity();
 	if (!fog->copy_uniform_set.is_null() && !RD::get_singleton()->uniform_set_is_valid(fog->copy_uniform_set)) {
 		fog->copy_uniform_set = RID();
@@ -1006,6 +1020,21 @@ void Fog::volumetric_fog_update(const VolumetricFogSettings &p_settings, const P
 			copy_uniforms.push_back(u);
 		}
 
+		if (rt_shadows) {
+			// Binding 22 exists only in the shader variants built with ray traced shadows.
+			RID tlas = p_settings.rt_tlas;
+			if (tlas.is_null()) {
+				// No scene was built this frame, so no light is traced, but the set must still match the shader.
+				if (rt_dummy_tlas.is_null()) {
+					rt_dummy_tlas = RD::get_singleton()->tlas_create(1, RD::ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT);
+					RD::get_singleton()->tlas_build(rt_dummy_tlas, Span<RD::AccelerationStructureInstance>());
+				}
+				tlas = rt_dummy_tlas;
+			}
+			fog->rt_tlas_in_sets = p_settings.rt_tlas;
+			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_ACCELERATION_STRUCTURE, 22, tlas));
+		}
+
 		if (fog->copy_uniform_set.is_valid() && RD::get_singleton()->uniform_set_is_valid(fog->copy_uniform_set)) {
 			RD::get_singleton()->free_rid(fog->copy_uniform_set);
 		}
@@ -1131,6 +1160,10 @@ void Fog::volumetric_fog_update(const VolumetricFogSettings &p_settings, const P
 	params.cam_rotation[9] = p_cam_transform.basis[1][2];
 	params.cam_rotation[10] = p_cam_transform.basis[2][2];
 	params.cam_rotation[11] = 0;
+	params.cam_origin[0] = p_cam_transform.origin.x;
+	params.cam_origin[1] = p_cam_transform.origin.y;
+	params.cam_origin[2] = p_cam_transform.origin.z;
+	params.rt_instance_mask = p_settings.rt_instance_mask;
 	params.filter_axis = 0;
 	params.max_voxel_gi_instances = RendererSceneRenderRD::get_singleton()->environment_get_volumetric_fog_gi_inject(p_settings.env) > 0.001 ? p_voxel_gi_count : 0;
 	params.temporal_frame = RSG::rasterizer->get_frame_number() % VolumetricFog::MAX_TEMPORAL_FRAMES;
