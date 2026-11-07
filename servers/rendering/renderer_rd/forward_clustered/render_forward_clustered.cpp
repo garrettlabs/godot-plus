@@ -4468,6 +4468,14 @@ RID RenderForwardClustered::_setup_sdfgi_render_pass_uniform_set(RID p_albedo_te
 		u.append_id(instance_buffer);
 		uniforms.push_back(u);
 	}
+	{
+		// The SDF variant declares this binding but never reads it; the set must still provide it.
+		RD::Uniform u;
+		u.binding = 39;
+		u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+		u.append_id(rt_shadow_default_buffer);
+		uniforms.push_back(u);
+	}
 
 	if (scene_shader.default_shader_sdfgi_rd.is_null()) {
 		// The variant for SDF from the default material should only be retrieved when SDFGI is required.
