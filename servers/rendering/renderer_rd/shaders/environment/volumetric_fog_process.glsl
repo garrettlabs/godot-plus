@@ -237,16 +237,16 @@ float rt_shadow_visibility(vec3 p_view_pos, vec3 p_light_view_pos, float p_near)
 	vec3 origin = mat3(params.cam_rotation) * p_view_pos + params.cam_origin;
 	vec3 target = mat3(params.cam_rotation) * p_light_view_pos + params.cam_origin;
 	vec3 to_target = target - origin;
-	float dist = length(to_target);
-	float t_max = dist - p_near;
-	if (t_max <= 0.0) {
-		return 1.0;
-	}
+	float dist = max(length(to_target), 0.0001);
+	// A light closer than p_near gets a ray of length 0, which cannot hit anything. No early return: with one
+	// in front of the query the shader compiler turned the result into "never occluded" on some drivers.
+	float t_max = max(dist - p_near, 0.0);
 	rayQueryEXT rq;
 	rayQueryInitializeEXT(rq, tlas, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT, params.rt_instance_mask, origin, 0.0, to_target / dist, t_max);
 	while (rayQueryProceedEXT(rq)) {
 	}
-	return rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT ? 0.0 : 1.0;
+	bool hit = rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT;
+	return hit ? 0.0 : 1.0;
 }
 #endif
 
