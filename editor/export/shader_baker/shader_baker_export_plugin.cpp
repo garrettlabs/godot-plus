@@ -371,6 +371,11 @@ uint64_t ShaderBakerExportPlugin::_get_customization_configuration_hash() const 
 }
 
 void ShaderBakerExportPlugin::_customize_shader_version(ShaderRD *p_shader, RID p_version) {
+	if (!shader_container_format->can_compile_ray_query() && p_shader->version_uses_ray_query(p_version)) {
+		WARN_PRINT(vformat("Shader baker skipped shader '%s': the %s driver can't compile ray queries.", p_shader->get_name(), shader_container_driver));
+		return;
+	}
+
 	const int64_t variant_count = p_shader->get_variant_count();
 	const int64_t group_count = p_shader->get_group_count();
 	LocalVector<ShaderGroupItem> group_items;

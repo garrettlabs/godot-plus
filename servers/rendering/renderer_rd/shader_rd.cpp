@@ -125,6 +125,9 @@ void ShaderRD::_add_stage(const char *p_code, StageType p_stage_type) {
 				text += l + "\n";
 			}
 		} else {
+			if (l.contains("GL_EXT_ray_query")) {
+				has_ray_query_source = true;
+			}
 			text += l + "\n";
 		}
 
@@ -444,6 +447,66 @@ Vector<String> ShaderRD::version_build_variant_stage_sources(RID p_version, int 
 	compile_data.version = version;
 	compile_data.group = variant_to_group[p_variant];
 	return _build_variant_stage_sources(p_variant, compile_data);
+}
+
+// Preprocessor-lite: the extension line may sit inside an `#ifdef` of a define the owner only sets sometimes.
+static bool _source_enables_ray_query(const String &p_source) {
+	struct Level {
+		bool active = true;
+		bool known = false; // Only `#ifdef` and `#ifndef` can be evaluated; other conditions count as true.
+	};
+	LocalVector<Level> levels;
+	HashSet<String> defines;
+	bool active = true;
+	for (const String &line : p_source.split("\n")) {
+		String l = line.strip_edges();
+		if (!l.begins_with("#")) {
+			continue;
+		}
+		l = l.substr(1).strip_edges();
+		if (l.begins_with("ifdef ") || l.begins_with("ifndef ")) {
+			bool negate = l.begins_with("ifndef ");
+			bool cond = defines.has(l.get_slicec(' ', 1).strip_edges()) != negate;
+			levels.push_back({ cond, true });
+			active = active && cond;
+		} else if (l.begins_with("if ") || l.begins_with("if(")) {
+			levels.push_back({ true, false });
+		} else if (l == "else" && !levels.is_empty() && levels[levels.size() - 1].known) {
+			levels[levels.size() - 1].active = !levels[levels.size() - 1].active;
+			active = true;
+			for (const Level &level : levels) {
+				active = active && level.active;
+			}
+		} else if (l.begins_with("endif") && !levels.is_empty()) {
+			levels.remove_at(levels.size() - 1);
+			active = true;
+			for (const Level &level : levels) {
+				active = active && level.active;
+			}
+		} else if (active && l.begins_with("define ")) {
+			defines.insert(l.get_slicec(' ', 1).strip_edges());
+		} else if (active && l.begins_with("extension") && l.contains("GL_EXT_ray_query")) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool ShaderRD::version_uses_ray_query(RID p_version) {
+	if (!has_ray_query_source) {
+		return false;
+	}
+	for (int64_t i = 0; i < get_variant_count(); i++) {
+		if (!is_variant_enabled(i)) {
+			continue;
+		}
+		for (const String &source : version_build_variant_stage_sources(p_version, i)) {
+			if (_source_enables_ray_query(source)) {
+				return true;
+			}
+		}
+	}
+	return false;
 }
 
 RenderingServerTypes::ShaderNativeSourceCode ShaderRD::version_get_native_source_code(RID p_version) {
