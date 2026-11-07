@@ -7,7 +7,9 @@ semantic version: tags are `vMAJOR.MINOR.PATCH`, and the binary reports
 upstream base stays visible in the string. The two earlier pre-releases used
 `v4.8-beta-plus.N`. See README.md for the scheme.
 
-## Unreleased (next: v1.2.1)
+## v1.2.1 — 2026-11-07
+
+Upstream base: unchanged, `cafc17a192`. A fix release (ray tracing off cost, volumetric fog with ray traced lights, SDFGI voxelization); same package layout as v1.0.0.
 
 - **rt-off-cost** (`69827f5314`) — ray tracing off costs nothing again. The forward shader's ray traced shadow lookup was compiled in unconditionally, so with `rendering/raytracing/enabled` off (the default) every omni and spot light in every forward pass still read its ray traced slot, branched on it and carried the inlined lookup, which cost GPU time in the opaque and transparent passes. The shader code is now compiled in only when ray tracing is in effect. On a test level with 60 shadowed lamps and 150 animated characters at 1080p (Vulkan) v1.2.0 spent 0.25 to 0.3 ms more GPU time per frame than v1.1.1 (4.7 to 4.85 ms against 4.45 to 4.5, the opaque pass +0.09 ms and the transparent pass +0.19 ms); in a build without the static shadow cache the GPU time was 3.18 ms before the fix and 2.93 ms after, equal to the build without the ray tracing patches (2.92 ms). With ray tracing on nothing changes.
 
