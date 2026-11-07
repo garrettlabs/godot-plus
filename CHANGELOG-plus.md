@@ -7,6 +7,10 @@ semantic version: tags are `vMAJOR.MINOR.PATCH`, and the binary reports
 upstream base stays visible in the string. The two earlier pre-releases used
 `v4.8-beta-plus.N`. See README.md for the scheme.
 
+## Unreleased (next: v1.3.0)
+
+- **shader-baker-ray-query** (`26c4836985`) — exporting with shader baking, the D3D12 driver and `rendering/raytracing/enabled` on no longer crashes the editor. The ray traced shadow shader and the volumetric fog shader with ray traced lights use ray queries, which the SPIR-V to DXIL translator behind the D3D12 shader container cannot emit; it crashed (exit 139, no message) about a third of the way through baking. Shader containers now report whether they can compile ray queries (Vulkan yes, D3D12 and Metal no), and the shader baker skips those shaders on the others with one warning per skipped shader. A skipped shader is not needed at run time, because ray tracing reports unavailable on D3D12. Vulkan exports bake them as before.
+
 ## v1.2.1 — 2026-11-07
 
 Upstream base: unchanged, `cafc17a192`. A fix release (ray tracing off cost, volumetric fog with ray traced lights, SDFGI voxelization); same package layout as v1.0.0.
