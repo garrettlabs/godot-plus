@@ -3699,6 +3699,9 @@ void RenderingServer::init() {
 	GLOBAL_DEF("rendering/raytracing/shadows/enabled", true);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/raytracing/shadows/max_positional_lights", PROPERTY_HINT_RANGE, "0,255,1"), 64);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/raytracing/shadows/soft_shadow_samples", PROPERTY_HINT_RANGE, "1,64,1"), 4);
+	GLOBAL_DEF("rendering/raytracing/ambient_occlusion/enabled", true);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/raytracing/ambient_occlusion/rays_per_pixel", PROPERTY_HINT_RANGE, "1,8,1"), 2);
+	GLOBAL_DEF("rendering/raytracing/ambient_occlusion/denoise", true);
 
 	GLOBAL_DEF_RST("rendering/lights_and_shadows/use_physical_light_units", false);
 

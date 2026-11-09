@@ -36,6 +36,7 @@
 #include "servers/rendering/renderer_rd/effects/dlss.h"
 #include "servers/rendering/renderer_rd/effects/fsr2.h"
 #include "servers/rendering/renderer_rd/effects/motion_vectors_store.h"
+#include "servers/rendering/renderer_rd/effects/rt_ao.h"
 #include "servers/rendering/renderer_rd/effects/rt_shadows.h"
 #include "servers/rendering/renderer_rd/effects/ss_effects.h"
 #include "servers/rendering/renderer_rd/effects/taa.h"
@@ -135,6 +136,9 @@ public:
 		RID rt_shadow_buffer;
 		uint32_t rt_shadow_buffer_pixels = 0;
 
+		// Camera state of the ray traced ambient occlusion denoiser's history (its textures are in the render buffers).
+		RendererRD::RTDenoiser::History rt_ao_history;
+
 		void ensure_specular();
 		bool has_specular() const { return render_buffers->has_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_SPECULAR); }
 		RID get_specular() const { return render_buffers->get_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_SPECULAR); }
@@ -205,6 +209,12 @@ private:
 	LocalVector<RendererRD::RTShadows::Light> rt_shadow_lights;
 
 	void _process_rt_shadows(const RenderDataRD *p_render_data, RenderBufferDataForwardClustered *p_rb_data);
+
+	/* Ray traced ambient occlusion */
+
+	RendererRD::RTAmbientOcclusion *rt_ao = nullptr; // Only with ray tracing enabled: its shader needs ray queries.
+
+	void _process_rt_ao(const RenderDataRD *p_render_data, RenderBufferDataForwardClustered *p_rb_data);
 
 	void _update_render_base_uniform_set();
 	RID _setup_sdfgi_render_pass_uniform_set(RID p_albedo_texture, RID p_emission_texture, RID p_emission_aniso_texture, RID p_geom_facing_texture, const RendererRD::MaterialStorage::Samplers &p_samplers, uint32_t p_uniform_buffer_index);
