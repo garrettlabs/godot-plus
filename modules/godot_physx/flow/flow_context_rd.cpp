@@ -677,9 +677,9 @@ RID shader_from_spirv_cached(Context *c, const Vector<uint8_t> &p_spirv) {
 	const int size = p_spirv.size();
 	const uint64_t key = ((uint64_t)hash_murmur3_buffer(bytes, size, 0x464c4f57) << 32) | hash_murmur3_buffer(bytes, size, 0x524e4456);
 	const String &cache_root = ShaderRD::get_shader_cache_user_dir();
-	// Per engine version, not per build: RenderingDevice rejects a binary
-	// whose container format it doesn't know, and that falls back to compiling.
-	const String dir = cache_root.is_empty() ? String() : cache_root.path_join("physx_flow").path_join(vformat("%s_%s", c->rd->get_device_api_name().validate_filename().to_lower(), String(VERSION_NUMBER)));
+	// Per engine build, like the engine's own shader cache: a container from
+	// another build can be in a layout this one parses wrongly (and logs errors for).
+	const String dir = cache_root.is_empty() ? String() : cache_root.path_join("physx_flow").path_join(vformat("%s_%s", c->rd->get_device_api_name().validate_filename().to_lower(), String(GODOT_VERSION_HASH)));
 	const String path = dir.is_empty() ? String() : dir.path_join(vformat("%016x.cache", key));
 	if (!path.is_empty() && FileAccess::exists(path)) {
 		const Vector<uint8_t> binary = FileAccess::get_file_as_bytes(path);
