@@ -17,6 +17,8 @@ Upstream base: unchanged, `cafc17a192`. A MINOR release: ray tracing on the D3D1
 
 - **d3d12-baker-ray-query** (`ced6fa6c2a`) — with that translator linked, the shader baker compiles the ray traced shadow and volumetric fog shaders for D3D12 exports instead of skipping them, so an exported D3D12 game with ray tracing on starts with them baked (an export with shader baking, D3D12 and ray tracing on finishes without a skip warning and the exported game runs with ray tracing in effect and no shadow draw calls).
 
+- **d3d12-shader-cache-version** (`3e6effe853`) — D3D12 shader containers carry a new format version (2), and the NVIDIA Flow shader cache is keyed by the full build hash instead of the version number. The container layout changed with D3D12 ray tracing; without this, the first D3D12 run of a Flow project upgraded from an earlier build logged "Failed to parse shader container from binary" for every cached Flow shader before recompiling.
+
 ## v1.2.1 — 2026-11-07
 
 Upstream base: unchanged, `cafc17a192`. A fix release (ray tracing off cost, volumetric fog with ray traced lights, SDFGI voxelization); same package layout as v1.0.0.

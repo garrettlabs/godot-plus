@@ -40,7 +40,7 @@ Bugs that also exist in upstream Godot and are fixed on `main` (numbers are issu
 | `main` | The engine. Upstream `master` plus every patch, merged `--no-ff`; builds and releases come from here. Upstream is pulled in at chosen commits, not continuously, so a build of `main` is reproducible. |
 | `master` | Mirror of `godotengine/godot` master. Never patched. |
 | `streamline-dlss`, `contact-shadows-positional`, `physx5-module`, `profiling-zones`, `plus-versioning`, `static-shadow-cache`, `rt-acceleration-structures`, `rt-shadows`, `d3d12-raytracing` | One patch each, cut from `master` and merged into `main` once they build and pass testing. |
-| `nav-async-sync`, `render-thread-shutdown`, `dlss-frame-token`, `fix/flow-colliders-in-physics-step`, `multimesh-interpolation-thread`, `instance-free-material-order`, `rt-off-cost`, `rt-fog-shadows`, `sdfgi-rt-binding`, `shader-baker-ray-query`, `d3d12-baker-ray-query` | Fix branches, merged into `main` the same way. A fix is cut from the branch it fixes when the code only exists there (`dlss-frame-token` from `streamline-dlss`, `rt-off-cost` from `rt-shadows`, `d3d12-baker-ray-query` from `main`), otherwise from `master`. |
+| `nav-async-sync`, `render-thread-shutdown`, `dlss-frame-token`, `fix/flow-colliders-in-physics-step`, `multimesh-interpolation-thread`, `instance-free-material-order`, `rt-off-cost`, `rt-fog-shadows`, `sdfgi-rt-binding`, `shader-baker-ray-query`, `d3d12-baker-ray-query`, `d3d12-shader-cache-version` | Fix branches, merged into `main` the same way. A fix is cut from the branch it fixes when the code only exists there (`dlss-frame-token` from `streamline-dlss`, `rt-off-cost` from `rt-shadows`, `d3d12-baker-ray-query` from `main`), otherwise from `master`. |
 
 ## Building (Windows)
 
