@@ -3,7 +3,7 @@
 **godot-plus is Godot 4.8 with a set of rendering and physics additions that upstream
 does not have**: DLSS through NVIDIA Streamline, screen-space contact shadows for omni and
 spot lights, static shadow caching, ray tracing (acceleration structures and ray-traced
-omni and spot shadows, on Vulkan), a PhysX 5 physics backend with GPU dynamics, Blast
+omni and spot shadows, on Vulkan and D3D12), a PhysX 5 physics backend with GPU dynamics, Blast
 destruction and Flow gas, and profiling zones for Tracy.
 `main` tracks upstream master; every addition is kept as its own merged topic branch so the
 set rebases onto new upstream releases. The patches are maintained here and are not
@@ -19,7 +19,7 @@ Upstream's own README follows below under *Godot Engine*.
 | **Screen-space contact shadows for omni and spot lights** | `renderer_rd/effects/ss_effects.*`, `light_storage.*`, `scene_forward_lights_inc.glsl` | Upstream traces them for directional lights only. `rendering/lights_and_shadows/contact_shadow/max_positional_lights` (default 4) caps the per-frame passes; the nearest lights that allow them get a layer. |
 | **PhysX 5.10 physics backend** (`physics/3d/physics_engine = "PhysX"`) with GPU rigid-body dynamics, vehicles, cloth, fluids, water, Flow gas, Blast destruction and a traced GI | `modules/godot_physx/` | Wild Ox Studios' module from [uno1982/godot](https://github.com/uno1982/godot), imported verbatim and ported to 4.8. The PhysX SDK is built out of tree (see Building). Jolt remains the default physics engine; GPU dynamics (`physics/physx_3d/simulation/gpu_dynamics`) pays off with thousands of dynamic bodies and costs a little otherwise. Flow and Blast are built in since `ed658b07a8` (releases from v1.0.0 on). |
 | **Static shadow caching** for omni and spot lights: `GeometryInstance3D.static_shadow_caster` marks geometry that never moves and a light then redraws only moving casters over a cached depth of the static ones | `renderer_scene_cull.*`, `renderer_rd/storage_rd/light_storage.*`, `forward_clustered/render_forward_clustered.*` | Forward+, spot and dual-paraboloid omni lights; `rendering/lights_and_shadows/positional_shadow/static_shadow_cache` switches it off. |
-| **Ray tracing** in Forward+ (Vulkan): acceleration structures for the scene and ray-traced shadows for omni and spot lights, in place of their shadow maps | `renderer_rd/` ray-query passes, `RenderingDevice.blas_update()`, `rendering/raytracing/*` | Off by default (`rendering/raytracing/enabled`, restart required); needs a GPU with ray queries. D3D12 and other GPUs keep shadow maps. Limits: at most 6 traced lights per pixel, light caster and cull masks are not applied, geometry displaced in a vertex shader casts its unmodified shape, and transparent surfaces receive no traced shadows. |
+| **Ray tracing** in Forward+ (Vulkan and D3D12): acceleration structures for the scene and ray-traced shadows for omni and spot lights, in place of their shadow maps | `renderer_rd/` ray-query passes, `RenderingDevice.blas_update()`, `rendering/raytracing/*` | Off by default (`rendering/raytracing/enabled`, restart required); needs a GPU with ray queries. On D3D12 it needs DXR 1.1, shader model 6.5 and a build against the ray-tracing NIR library (see Building); GPUs or builds without ray-query support keep shadow maps. D3D12 driver support derives from [godotengine/godot#118654](https://github.com/godotengine/godot/pull/118654) by Skyth. Limits: at most 6 traced lights per pixel, light caster and cull masks are not applied, geometry displaced in a vertex shader casts its unmodified shape, and transparent surfaces receive no traced shadows. |
 | **Profiling zones** for animation, skeletons, scene tree and the 3D render path | `scene/animation`, `scene/3d`, `scene/main`, `servers/rendering` | Active in `profiler=tracy` builds only. A Tracy capture can then attribute a frame to shadow culling, draw submission, animation and script instead of one opaque zone. |
 
 Everything else is upstream Godot 4.8-beta at the commit `master` points to.
@@ -39,8 +39,8 @@ Bugs that also exist in upstream Godot and are fixed on `main` (numbers are issu
 |---|---|
 | `main` | The engine. Upstream `master` plus every patch, merged `--no-ff`; builds and releases come from here. Upstream is pulled in at chosen commits, not continuously, so a build of `main` is reproducible. |
 | `master` | Mirror of `godotengine/godot` master. Never patched. |
-| `streamline-dlss`, `contact-shadows-positional`, `physx5-module`, `profiling-zones`, `plus-versioning`, `static-shadow-cache`, `rt-acceleration-structures`, `rt-shadows` | One patch each, cut from `master` and merged into `main` once they build and pass testing. |
-| `nav-async-sync`, `render-thread-shutdown`, `dlss-frame-token`, `fix/flow-colliders-in-physics-step`, `multimesh-interpolation-thread`, `instance-free-material-order`, `rt-off-cost` | Fix branches, merged into `main` the same way. A fix is cut from the branch it fixes when the code only exists there (`dlss-frame-token` from `streamline-dlss`, `rt-off-cost` from `rt-shadows`), otherwise from `master`. |
+| `streamline-dlss`, `contact-shadows-positional`, `physx5-module`, `profiling-zones`, `plus-versioning`, `static-shadow-cache`, `rt-acceleration-structures`, `rt-shadows`, `d3d12-raytracing` | One patch each, cut from `master` and merged into `main` once they build and pass testing. |
+| `nav-async-sync`, `render-thread-shutdown`, `dlss-frame-token`, `fix/flow-colliders-in-physics-step`, `multimesh-interpolation-thread`, `instance-free-material-order`, `rt-off-cost`, `rt-fog-shadows`, `sdfgi-rt-binding`, `shader-baker-ray-query`, `d3d12-baker-ray-query` | Fix branches, merged into `main` the same way. A fix is cut from the branch it fixes when the code only exists there (`dlss-frame-token` from `streamline-dlss`, `rt-off-cost` from `rt-shadows`, `d3d12-baker-ray-query` from `main`), otherwise from `master`. |
 
 ## Building (Windows)
 
@@ -63,14 +63,24 @@ from `misc/scripts/install_d3d12_sdk_windows.py`, AccessKit from
 - **Streamline DLLs**: `sl.interposer.dll`, `sl.common.dll`, `sl.dlss.dll`, `nvngx_dlss.dll`
   from the [Streamline SDK 2.10.x release](https://github.com/NVIDIA-RTX/Streamline/releases)
   (`bin/x64/`), copied next to the built binary. The headers are in `thirdparty/streamline`.
+- **Ray-tracing NIR library** (optional, for ray tracing on D3D12): download
+  `godot-nir-static-x86_64-msvc-release.zip` from this repository's
+  [v1.3.0 release assets](https://github.com/garrettlabs/godot-plus/releases/tag/v1.3.0),
+  extract it to a folder named `mesa-x86_64-msvc` (so that
+  `<dir>/mesa-x86_64-msvc/bin/libNIR.windows.x86_64.lib` exists) and add `mesa_libs=<dir>/mesa`
+  to every scons line below. It is a build of
+  [godot-nir-static](https://github.com/blueskythlikesclouds/godot-nir-static) with ray-tracing
+  support in Mesa's SPIR-V to DXIL translator, by Skyth (blueskythlikesclouds), not yet merged
+  upstream, redistributed unmodified under the MIT license. Without it the build succeeds and
+  D3D12 simply has no ray tracing (shadow maps stay); Vulkan is unaffected.
 
 Then, from the repo root (PowerShell; Git Bash makes the build look for MinGW), with
 `use_llvm=yes` on every target:
 
 ```
-scons platform=windows target=editor           use_llvm=yes physx_sdk=<sdk>/install/vc17win64-godot-gpu/PhysX physx_gpu=yes blast_sdk=<checkout>/blast/_build/windows-x86_64/release/blast-sdk flow_sdk=<checkout>/flow
-scons platform=windows target=template_release use_llvm=yes physx_sdk=<sdk>/install/vc17win64-godot-gpu/PhysX physx_gpu=yes blast_sdk=<checkout>/blast/_build/windows-x86_64/release/blast-sdk flow_sdk=<checkout>/flow
-scons platform=windows target=template_debug   use_llvm=yes physx_sdk=<sdk>/install/vc17win64-godot-gpu/PhysX physx_gpu=yes blast_sdk=<checkout>/blast/_build/windows-x86_64/release/blast-sdk flow_sdk=<checkout>/flow
+scons platform=windows target=editor           use_llvm=yes physx_sdk=<sdk>/install/vc17win64-godot-gpu/PhysX physx_gpu=yes blast_sdk=<checkout>/blast/_build/windows-x86_64/release/blast-sdk flow_sdk=<checkout>/flow mesa_libs=<dir>/mesa
+scons platform=windows target=template_release use_llvm=yes physx_sdk=<sdk>/install/vc17win64-godot-gpu/PhysX physx_gpu=yes blast_sdk=<checkout>/blast/_build/windows-x86_64/release/blast-sdk flow_sdk=<checkout>/flow mesa_libs=<dir>/mesa
+scons platform=windows target=template_debug   use_llvm=yes physx_sdk=<sdk>/install/vc17win64-godot-gpu/PhysX physx_gpu=yes blast_sdk=<checkout>/blast/_build/windows-x86_64/release/blast-sdk flow_sdk=<checkout>/flow mesa_libs=<dir>/mesa
 ```
 
 `use_llvm=yes` compiles with clang-cl (the "C++ Clang tools for Windows" component of VS 2022,
@@ -112,7 +122,9 @@ export templates, all from one commit, packaged as a zip on GitHub Releases.
 ## Licensing
 
 Godot is MIT. The PhysX module is MIT (Wild Ox Studios) and links the PhysX SDK
-(BSD-3-Clause; notice in `modules/godot_physx/PHYSX-LICENSE.md`). Streamline is MIT; the
+(BSD-3-Clause; notice in `modules/godot_physx/PHYSX-LICENSE.md`). Mesa (the SPIR-V to DXIL
+translator, MIT) and godot-nir-static (MIT) are linked into D3D12 builds; the D3D12 ray-tracing
+driver code derives from godotengine/godot#118654 by Skyth. Streamline is MIT; the
 NVIDIA DLSS runtime (`nvngx_dlss.dll`) is redistributed under the Streamline SDK terms.
 Upstream's `LICENSE.txt` and `COPYRIGHT.txt` apply to everything else.
 
