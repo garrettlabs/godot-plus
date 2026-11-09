@@ -60,6 +60,8 @@ public:
 	virtual bool has_valid_project_configuration(const Ref<EditorExportPreset> &p_preset, String &r_error) const override;
 	virtual Error export_project(const Ref<EditorExportPreset> &p_preset, bool p_debug, const String &p_path, BitField<EditorExportPlatform::DebugFlags> p_flags = 0, bool p_notify = true) override;
 	virtual Error sign_shared_object(const Ref<EditorExportPreset> &p_preset, bool p_debug, const String &p_path);
+	// Folder, relative to the export folder, a shared object with no target of its own is copied to (empty: the export folder).
+	virtual String get_shared_object_default_target(const Ref<EditorExportPreset> &p_preset, const String &p_path) const { return String(); }
 	virtual String get_template_file_name(const String &p_target, const String &p_arch) const = 0;
 
 	virtual Error prepare_template(const Ref<EditorExportPreset> &p_preset, bool p_debug, const String &p_path, BitField<EditorExportPlatform::DebugFlags> p_flags);

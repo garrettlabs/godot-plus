@@ -200,6 +200,15 @@ public:
 	virtual Error close_dynamic_library(void *p_library_handle) { return ERR_UNAVAILABLE; }
 	virtual Error get_dynamic_library_symbol_handle(void *p_library_handle, const String &p_name, void *&p_symbol_handle, bool p_optional = false) { return ERR_UNAVAILABLE; }
 
+	// Folder beside the executable that holds the native libraries the engine loads by name, when an
+	// exported project keeps them in a subfolder (Windows export option "application/library_subfolder").
+	// Empty when unset or when the folder does not exist.
+	virtual String get_runtime_library_dir() const { return String(); }
+	// Loads a native library the engine itself ships (not a GDExtension): first from get_runtime_library_dir(),
+	// then with the platform's default search. Returns the native handle or nullptr. r_loaded_from receives the
+	// folder it was found in when that was the runtime library folder, otherwise an empty string.
+	virtual void *load_runtime_library(const String &p_file, String *r_loaded_from = nullptr) { return nullptr; }
+
 	virtual void set_low_processor_usage_mode(bool p_enabled);
 	virtual bool is_in_low_processor_usage_mode() const;
 	virtual void set_low_processor_usage_mode_sleep_usec(int p_usec);

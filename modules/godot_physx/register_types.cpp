@@ -37,6 +37,7 @@
 #include "blast/godot_physx_blast_probe.h"
 #include "blast/physx_blast_asset.h"
 #include "blast/physx_blast_authoring.h"
+#include "blast/physx_blast_runtime.h"
 #include "blast/physx_destructible_3d.h"
 #endif
 #include "cloth/physx_skinned_cloth_3d.h"
@@ -110,6 +111,10 @@ static void _physx_editor_init() {
 
 void initialize_godot_physx_module(ModuleInitializationLevel p_level) {
 	if (p_level == MODULE_INITIALIZATION_LEVEL_SERVERS) {
+#ifdef GODOT_PHYSX_BLAST
+		// Project settings are loaded by now, so an export's library subfolder is known.
+		PhysXBlastRuntime::load();
+#endif
 		GodotPhysXProjectSettings::register_settings();
 		PhysicsServer3DManager::get_singleton()->register_server("PhysX", callable_mp_static(&create_physx_physics_server));
 	}

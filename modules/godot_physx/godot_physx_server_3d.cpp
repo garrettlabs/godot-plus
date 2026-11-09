@@ -1528,6 +1528,15 @@ void GodotPhysXServer3D::init() {
 	if (!GodotPhysXProjectSettings::gpu_dynamics) {
 		print_verbose("PhysX: gpu_dynamics is off -> CPU simulation.");
 	} else if (!GodotPhysXProjectSettings::enhanced_determinism) {
+#ifdef WINDOWS_ENABLED
+		// With an export's library subfolder, load the GPU module from there: PhysX looks for an already loaded
+		// PhysXGpu_64.dll by name (GetModuleHandle) before it loads one itself. The reference is kept for the
+		// life of the process, as PhysX keeps the module it loads.
+		const String library_dir = OS::get_singleton()->get_runtime_library_dir();
+		if (!library_dir.is_empty()) {
+			OS::get_singleton()->load_runtime_library("PhysXGpu_64.dll");
+		}
+#endif
 		PxCudaContextManagerDesc cuda_desc;
 		px_cuda = PxCreateCudaContextManager(*px_foundation, cuda_desc, PxGetProfilerCallback());
 		if (px_cuda && !px_cuda->contextIsValid()) {
@@ -1538,7 +1547,11 @@ void GodotPhysXServer3D::init() {
 			print_line(vformat("PhysX: CUDA context ready on device '%s' -> GPU dynamics available.", px_cuda->getDeviceName()));
 		} else if (px_error_callback.gpu_module_load_failed) {
 #ifdef WINDOWS_ENABLED
-			WARN_PRINT("PhysX: PhysXGpu_64.dll was not found next to the executable; falling back to CPU simulation. Ship it with the game (see the module README, \"Exporting a game\").");
+			if (!library_dir.is_empty()) {
+				WARN_PRINT(vformat("PhysX: PhysXGpu_64.dll was not found in %s or next to the executable; falling back to CPU simulation. Ship it with the game (see the module README, \"Exporting a game\").", library_dir));
+			} else {
+				WARN_PRINT("PhysX: PhysXGpu_64.dll was not found next to the executable; falling back to CPU simulation. Ship it with the game (see the module README, \"Exporting a game\").");
+			}
 #else
 			WARN_PRINT("PhysX: libPhysXGpu_64.so was not found next to the executable; falling back to CPU simulation. Ship it with the game (see the module README, \"Exporting a game\").");
 #endif

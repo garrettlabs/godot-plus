@@ -221,9 +221,17 @@ export warns and says what the game loses:
 
 | Library | Without it |
 | --- | --- |
-| `NvBlast.dll`, `NvBlastGlobals.dll`, `NvBlastExtAuthoring.dll`, `NvBlastExtShaders.dll` (`libNvBlast*.so`) | the game doesn't start (Blast is linked at load time) |
+| `NvBlast.dll`, `NvBlastGlobals.dll`, `NvBlastExtAuthoring.dll`, `NvBlastExtShaders.dll` (`libNvBlast*.so`) | Windows (MSVC or clang-cl build): the game logs an error at startup and Blast destruction is unavailable. Linux and MinGW builds: the game doesn't start (Blast is linked at load time) |
 | `PhysXGpu_64.dll` (`libPhysXGpu_64.so`, ~350 MB) | PhysX runs on the CPU; the game logs which file is missing |
 | `nvflow.dll`, `nvflowext.dll` (`libnvflow*.so`) | the Flow nodes stay inert |
+
+On Windows the libraries can live in a subfolder instead of beside the
+executable: set the Windows export preset's **Application → Library
+Subfolder** (`application/library_subfolder`, e.g. `lib`). The export then
+puts these DLLs there (the license notice stays beside the executable), and
+the exported game loads them from that folder, falling back to the
+executable's folder. Windows builds made with MSVC or clang-cl delay-load the
+Blast DLLs for this; the module loads them during its initialization.
 
 On Linux the binary looks for the `.so` files next to itself (`SCsub` sets an
 `$ORIGIN` rpath). Other platforms (Android, macOS, web) aren't supported by
@@ -296,7 +304,7 @@ black, at the screen's aspect ratio: it's stretched to fit).
 
 A camera lens flare: every bright part of the frame (sun, fire, headlights,
 Flow flames) is reflected back over the screen as a row of soft, tinted
-ghosts through the screen's centre, plus a faint halo ring. It's image-based,
+ghosts through the screen's center, plus a faint halo ring. It's image-based,
 so no light needs tagging, and a light that's covered or leaves the frame
 stops flaring. Add the node; that's all.
 
@@ -335,7 +343,7 @@ multiple bounces.
   `StandardMaterial3D`, its glow from its brightest surface. PXTGI can't
   read a `ShaderMaterial`; give one a `pxtgi_albedo` and/or
   `pxtgi_emission` Color in its metadata (or put them on the
-  `MeshInstance3D` or the physics body), or it bounces as neutral grey with
+  `MeshInstance3D` or the physics body), or it bounces as neutral gray with
   no glow off screen.
 - Lights: the sun is the brightest visible `DirectionalLight3D` that lights
   surfaces; of omni and spot lights, the 8 of each Godot draws that come
@@ -904,7 +912,7 @@ cleared (a surface with a `surface_mesh` footprint or a measured seabed still
 rebuilds, since its depths depend on where the square is). Together with
 `render_extent` that's an endless ocean out to the horizon. The one limit is
 ordinary floating-point precision far from the world origin — at hundreds of
-kilometres rendering and physics start to jitter, as for any Godot scene; large
+kilometers rendering and physics start to jitter, as for any Godot scene; large
 worlds shift their origin or use a double-precision build. Over a coastline,
 turn on `open_sea_beyond` so the sea past a moving square stays open deep water
 instead of carrying the square's edge — its seabed, shore foam and wet sand —
@@ -1011,7 +1019,7 @@ For deterministic lockstep multiplayer, use the Jolt backend.
   side's value, so this backend uses the larger one: exact whenever one side's
   bounce is 0 (a bouncy ball on an ordinary floor), but two bouncy bodies bounce
   less than the sum, and an `absorbent` material counts as 0 instead of
-  cancelling the other side's bounce. Friction matches Godot's rule (`rough`
+  canceling the other side's bounce. Friction matches Godot's rule (`rough`
   wins), except that a `rough` material against a higher-friction one gets the
   higher friction.
 - **`SeparationRayShape3D`** has no PhysX geometry: it's cast as a ray. In

@@ -30,6 +30,8 @@
 
 #include "godot_physx_blast_probe.h"
 
+#include "physx_blast_runtime.h"
+
 #include "core/io/file_access.h"
 #include "core/object/class_db.h"
 #include "core/variant/variant.h"
@@ -107,6 +109,7 @@ void GodotPhysXBlastProbe::_free_all() {
 }
 
 bool GodotPhysXBlastProbe::load(const String &p_asset_path, const String &p_chunks_path) {
+	ERR_FAIL_COND_V_MSG(!PhysXBlastRuntime::is_available(), false, "Blast probe: the Blast libraries are not loaded.");
 	// -- Raw NvBlastAsset bytes: a single relocatable memory block (per
 	// NvBlast's own design), so loading is just "read the bytes into a
 	// 16-byte-aligned buffer" -- no format of our own on top.

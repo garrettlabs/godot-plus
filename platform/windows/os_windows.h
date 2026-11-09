@@ -175,6 +175,9 @@ public:
 	virtual Error close_dynamic_library(void *p_library_handle) override;
 	virtual Error get_dynamic_library_symbol_handle(void *p_library_handle, const String &p_name, void *&p_symbol_handle, bool p_optional = false) override;
 
+	virtual String get_runtime_library_dir() const override;
+	virtual void *load_runtime_library(const String &p_file, String *r_loaded_from = nullptr) override;
+
 	virtual MainLoop *get_main_loop() const override;
 
 	virtual String get_name() const override;

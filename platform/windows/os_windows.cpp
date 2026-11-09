@@ -476,8 +476,14 @@ Error OS_Windows::open_dynamic_library(const String &p_path, void *&p_library_ha
 	String path = p_path;
 
 	if (!FileAccess::exists(path)) {
-		//this code exists so gdextension can load .dll files from within the executable path
-		path = get_executable_path().get_base_dir().path_join(p_path.get_file());
+		// This code exists so gdextension can load .dll files from within the executable path,
+		// or from the library subfolder an export can put them in.
+		const String library_dir = get_runtime_library_dir();
+		if (!library_dir.is_empty() && FileAccess::exists(library_dir.path_join(p_path.get_file()))) {
+			path = library_dir.path_join(p_path.get_file());
+		} else {
+			path = get_executable_path().get_base_dir().path_join(p_path.get_file());
+		}
 		ERR_FAIL_COND_V(!FileAccess::exists(path), ERR_FILE_NOT_FOUND);
 	}
 	// Path to load from may be different from original if we make copies.
@@ -582,6 +588,47 @@ void OS_Windows::_remove_temp_library(void *p_library_handle) {
 		WindowsUtils::remove_temp_pdbs(path);
 		temp_libraries.erase(p_library_handle);
 	}
+}
+
+String OS_Windows::get_runtime_library_dir() const {
+	// Written into exported projects by the Windows export option "application/library_subfolder";
+	// not registered, so it never appears in the editor or in project.godot.
+	const ProjectSettings *project_settings = ProjectSettings::get_singleton();
+	if (project_settings == nullptr) {
+		return String();
+	}
+	const String subfolder = String(project_settings->get_setting("application/run/windows_library_subfolder", String())).strip_edges();
+	if (subfolder.is_empty() || subfolder == "." || subfolder == ".." || subfolder.contains_char('/') || subfolder.contains_char('\\') || subfolder.contains_char(':')) {
+		return String();
+	}
+	const String dir = get_executable_path().get_base_dir().path_join(subfolder);
+	if (!DirAccess::dir_exists_absolute(dir)) {
+		return String();
+	}
+	return dir;
+}
+
+void *OS_Windows::load_runtime_library(const String &p_file, String *r_loaded_from) {
+	if (r_loaded_from) {
+		*r_loaded_from = String();
+	}
+	const String library_dir = get_runtime_library_dir();
+	if (!library_dir.is_empty()) {
+		// LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR lets the library's own load-time imports resolve from the same folder.
+		// The process-wide search order is left alone (no SetDefaultDllDirectories).
+		const String path = fix_path(library_dir.path_join(p_file));
+		if (GetFileAttributesW((LPCWSTR)path.utf16().get_data()) != INVALID_FILE_ATTRIBUTES) {
+			HMODULE module = LoadLibraryExW((LPCWSTR)path.utf16().get_data(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+			if (module) {
+				if (r_loaded_from) {
+					*r_loaded_from = library_dir;
+				}
+				return (void *)module;
+			}
+		}
+	}
+	// Default search: the executable's folder first, as before.
+	return (void *)LoadLibraryW((LPCWSTR)p_file.utf16().get_data());
 }
 
 Error OS_Windows::get_dynamic_library_symbol_handle(void *p_library_handle, const String &p_name, void *&p_symbol_handle, bool p_optional) {

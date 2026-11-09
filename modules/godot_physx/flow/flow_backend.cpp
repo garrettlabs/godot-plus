@@ -36,6 +36,8 @@
 #define PNANOVDB_C
 #include "nvflow/nanovdb/PNanoVDB.h"
 
+#include "core/os/os.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdarg>
@@ -177,10 +179,33 @@ bool acquire_library(char *r_error, int p_error_size) {
 	}
 	Library *l = new Library();
 	load_error[0] = '\0';
+#ifdef _WIN32
+	// With an export's library subfolder, load both from there first: the loader's own LoadLibraryA by name
+	// then finds the modules already loaded. The extra references are dropped once it holds its own.
+	const String library_dir = OS::get_singleton()->get_runtime_library_dir();
+	HMODULE preloaded_nvflow = nullptr;
+	HMODULE preloaded_nvflowext = nullptr;
+	if (!library_dir.is_empty()) {
+		preloaded_nvflow = (HMODULE)OS::get_singleton()->load_runtime_library("nvflow.dll");
+		preloaded_nvflowext = (HMODULE)OS::get_singleton()->load_runtime_library("nvflowext.dll");
+	}
+#endif
 	NvFlowLoaderInit(&l->loader, on_load_error, nullptr);
+#ifdef _WIN32
+	if (preloaded_nvflow) {
+		FreeLibrary(preloaded_nvflow);
+	}
+	if (preloaded_nvflowext) {
+		FreeLibrary(preloaded_nvflowext);
+	}
+#endif
 	if (l->loader.module_nvflow == nullptr || l->loader.module_nvflowext == nullptr) {
 #ifdef _WIN32
-		snprintf(r_error, p_error_size, "nvflow.dll / nvflowext.dll not found next to the executable (%s)", load_error);
+		if (!library_dir.is_empty()) {
+			snprintf(r_error, p_error_size, "nvflow.dll / nvflowext.dll not found in %s or next to the executable (%s)", library_dir.utf8().get_data(), load_error);
+		} else {
+			snprintf(r_error, p_error_size, "nvflow.dll / nvflowext.dll not found next to the executable (%s)", load_error);
+		}
 #else
 		snprintf(r_error, p_error_size, "libnvflow.so / libnvflowext.so not found next to the executable (%s)", load_error);
 #endif
