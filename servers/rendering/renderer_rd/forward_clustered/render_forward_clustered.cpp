@@ -124,7 +124,10 @@ void RenderForwardClustered::RenderBufferDataForwardClustered::free_data() {
 		render_buffers->clear_context(RB_SCOPE_SSAO);
 		render_buffers->clear_context(RB_SCOPE_SSR);
 		render_buffers->clear_context(RB_SCOPE_SSCS);
+		render_buffers->clear_context(RB_SCOPE_RT_AO);
+		render_buffers->clear_context(RB_SCOPE_RT_AO_DENOISE);
 	}
+	rt_ao_history = RendererRD::RTDenoiser::History();
 
 	if (cluster_builder) {
 		memdelete(cluster_builder);
@@ -1978,6 +1981,33 @@ void RenderForwardClustered::_process_rt_shadows(const RenderDataRD *p_render_da
 	RD::get_singleton()->draw_command_end_label();
 }
 
+void RenderForwardClustered::_process_rt_ao(const RenderDataRD *p_render_data, RenderBufferDataForwardClustered *p_rb_data) {
+	Ref<RenderSceneBuffersRD> rb = p_render_data->render_buffers;
+	RID environment = p_render_data->environment;
+
+	// Traced AO lands in the texture screen-space AO fills, so the forward pass and the debug view read it unchanged.
+	// Screen-space AO's own working textures are not needed while it is replaced.
+	if (rb->has_texture(RB_SCOPE_SSAO, RB_DEINTERLEAVED)) {
+		rb->clear_context(RB_SCOPE_SSAO);
+	}
+	rb->create_texture(RB_SCOPE_SSAO, RB_FINAL, RD::DATA_FORMAT_R8_UNORM, RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT, RD::TEXTURE_SAMPLES_1);
+
+	RendererRD::RTAmbientOcclusion::Settings settings;
+	settings.radius = environment_get_ssao_radius(environment);
+	settings.intensity = environment_get_ssao_intensity(environment);
+	settings.power = environment_get_ssao_power(environment);
+	settings.ray_count = CLAMP(GLOBAL_GET_CACHED(int, "rendering/raytracing/ambient_occlusion/rays_per_pixel"), 1, 8);
+	settings.denoise = GLOBAL_GET_CACHED(bool, "rendering/raytracing/ambient_occlusion/denoise");
+	// Shadow casters occlude. The visible mask would also take in transparent and effect geometry (light beams,
+	// fog cards), which darkens whatever stands inside it.
+	settings.instance_mask = RT_INSTANCE_MASK_SHADOW_CASTER;
+
+	RENDER_TIMESTAMP("Ray Traced AO");
+	RD::get_singleton()->draw_command_begin_label("Ray Traced AO");
+	rt_ao->process(rb, p_rb_data->rt_ao_history, p_rb_data->rt_tlas, rb->get_depth_texture(0), p_rb_data->get_normal_roughness(0), rb->get_texture_slice(RB_SCOPE_SSAO, RB_FINAL, 0, 0), p_render_data->scene_data->view_projection[0], p_render_data->scene_data->cam_transform, RSG::rasterizer->get_frame_number(), settings);
+	RD::get_singleton()->draw_command_end_label();
+}
+
 void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Color &p_default_bg_color) {
 	scene_state.used_uniform_buffer_count = 0;
 
@@ -2226,6 +2256,15 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 			rb_data->rt_shadow_buffer = RD::get_singleton()->storage_buffer_create(pixels * RendererRD::RTShadows::ENTRY_SIZE);
 			rb_data->rt_shadow_buffer_pixels = pixels;
 		}
+	}
+
+	// Ray traced AO replaces screen-space AO for this view when the scene has a TLAS. It needs what SSAO needs
+	// (depth pre-pass with normal-roughness), so only the SSAO passes themselves are skipped.
+	const bool using_rt_ao = using_ssao && rt_ao != nullptr && rb_data.is_valid() && p_render_data->rt_instances != nullptr && !is_reflection_probe && !is_multiview && rb_data->rt_tlas.is_valid() && GLOBAL_GET_CACHED(bool, "rendering/raytracing/ambient_occlusion/enabled");
+	if (rt_ao != nullptr && !using_rt_ao && rb_data.is_valid() && rb->has_texture(RB_SCOPE_RT_AO, SNAME("visibility"))) {
+		rb->clear_context(RB_SCOPE_RT_AO);
+		rb->clear_context(RB_SCOPE_RT_AO_DENOISE);
+		rb_data->rt_ao_history = RendererRD::RTDenoiser::History();
 	}
 
 	if (!is_reflection_probe) {
@@ -2498,10 +2537,14 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 			}
 		}
 	}
-	_pre_opaque_render(p_render_data, using_ssao, using_ssil, using_ssr, using_sscs, using_sdfgi || using_voxelgi, normal_roughness_views, voxel_gi_views);
+	_pre_opaque_render(p_render_data, using_ssao && !using_rt_ao, using_ssil, using_ssr, using_sscs, using_sdfgi || using_voxelgi, normal_roughness_views, voxel_gi_views);
 
 	if (using_rt_shadows) {
 		_process_rt_shadows(p_render_data, rb_data.ptr());
+	}
+
+	if (using_rt_ao) {
+		_process_rt_ao(p_render_data, rb_data.ptr());
 	}
 
 	if (current_cluster_builder) {
@@ -5637,6 +5680,7 @@ RenderForwardClustered::RenderForwardClustered() {
 	rt_shadow_default_buffer = RD::get_singleton()->storage_buffer_create(RendererRD::RTShadows::ENTRY_SIZE);
 	if (RendererRD::MeshStorage::get_singleton()->is_raytracing_enabled()) {
 		rt_shadows = memnew(RendererRD::RTShadows);
+		rt_ao = memnew(RendererRD::RTAmbientOcclusion);
 	}
 #ifdef METAL_MFXTEMPORAL_ENABLED
 	motion_vectors_store = memnew(RendererRD::MotionVectorsStore);
@@ -5653,6 +5697,10 @@ RenderForwardClustered::~RenderForwardClustered() {
 	if (rt_shadows != nullptr) {
 		memdelete(rt_shadows);
 		rt_shadows = nullptr;
+	}
+	if (rt_ao != nullptr) {
+		memdelete(rt_ao);
+		rt_ao = nullptr;
 	}
 	RD::get_singleton()->free_rid(rt_shadow_default_buffer);
 
