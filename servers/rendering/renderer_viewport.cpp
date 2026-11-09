@@ -1070,7 +1070,12 @@ void RendererViewport::viewport_set_scaling_3d_mode(RID p_viewport, RSE::Viewpor
 		ERR_PRINT_ONCE_ED("DLSS is not available because Streamline support was not compiled into the engine.");
 #else
 		if (StreamlineContext::get().slInit == nullptr) {
-			ERR_PRINT_ONCE_ED("DLSS is not available because Streamline failed to initialize (sl.interposer.dll not found or failed to load). Please download the Streamline SDK from GitHub (NVIDIA-RTX/Streamline) and make sure the Streamline SDK binaries are in the same directory as the Godot executable, and restart Godot.");
+			const String library_dir = OS::get_singleton()->get_runtime_library_dir();
+			if (!library_dir.is_empty()) {
+				ERR_PRINT_ONCE_ED(vformat("DLSS is not available because Streamline failed to initialize (sl.interposer.dll not found or failed to load). Please download the Streamline SDK from GitHub (NVIDIA-RTX/Streamline) and make sure the Streamline SDK binaries are in %s or in the same directory as the Godot executable, and restart Godot.", library_dir));
+			} else {
+				ERR_PRINT_ONCE_ED("DLSS is not available because Streamline failed to initialize (sl.interposer.dll not found or failed to load). Please download the Streamline SDK from GitHub (NVIDIA-RTX/Streamline) and make sure the Streamline SDK binaries are in the same directory as the Godot executable, and restart Godot.");
+			}
 		}
 #endif
 	}
