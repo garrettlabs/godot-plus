@@ -912,7 +912,7 @@ Error RenderingContextDriverVulkan::initialize() {
 
 #if defined(USE_VOLK) && defined(STREAMLINE_ENABLED) && defined(_WIN32)
 	HMODULE module;
-	module = LoadLibraryA("sl.interposer.dll");
+	module = (HMODULE)OS::get_singleton()->load_runtime_library("sl.interposer.dll");
 	if (module != nullptr) {
 		// note: function pointer is cast through void function pointer to silence cast-function-type warning on gcc8
 		PFN_vkGetInstanceProcAddr vk_getInstanceProcAddr = (PFN_vkGetInstanceProcAddr)(void (*)())GetProcAddress(module, "vkGetInstanceProcAddr");

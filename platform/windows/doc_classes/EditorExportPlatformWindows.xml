@@ -40,6 +40,9 @@
 		<member name="application/icon_interpolation" type="int" setter="" getter="">
 			Interpolation method used to resize application icon.
 		</member>
+		<member name="application/library_subfolder" type="String" setter="" getter="">
+			If set, the runtime libraries the engine loads are exported into this folder beside the executable instead of next to it, and the exported project looks for them there. The value must be a single folder name such as [code]lib[/code]. This covers the Direct3D 12 Agility SDK (in an architecture subfolder of it when [member application/d3d12_agility_sdk_multiarch] is set), the NVIDIA Streamline (DLSS) libraries, and every [code].dll[/code] exported as a shared object without a target folder of its own: GDExtension libraries and their dependencies, and the libraries of engine modules. Other files keep their place beside the executable, as do the ANGLE, AccessKit and PIX libraries, which the executable imports when they are used. If left empty, every library is exported next to the executable.
+		</member>
 		<member name="application/modify_resources" type="bool" setter="" getter="">
 			If enabled, icon and metadata of the exported executable is set according to the other [code]application/*[/code] values.
 		</member>

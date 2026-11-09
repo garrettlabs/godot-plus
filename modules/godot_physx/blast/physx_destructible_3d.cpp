@@ -30,6 +30,8 @@
 
 #include "physx_destructible_3d.h"
 
+#include "physx_blast_runtime.h"
+
 #include "core/config/engine.h"
 #include "core/io/file_access.h"
 #include "core/math/triangle_mesh.h"
@@ -548,6 +550,7 @@ void PhysXDestructible3D::_notification(int p_what) {
 }
 
 bool PhysXDestructible3D::_load_asset_bytes(const PackedByteArray &p_bytes) {
+	ERR_FAIL_COND_V_MSG(!PhysXBlastRuntime::is_available(), false, "PhysXDestructible3D: the Blast libraries are not loaded.");
 	ERR_FAIL_COND_V_MSG(p_bytes.is_empty(), false, "PhysXDestructible3D: empty asset bytes.");
 	asset_mem = aligned_alloc_16((size_t)p_bytes.size());
 	ERR_FAIL_NULL_V(asset_mem, false);
@@ -556,7 +559,6 @@ bool PhysXDestructible3D::_load_asset_bytes(const PackedByteArray &p_bytes) {
 	NvBlastAsset *asset = reinterpret_cast<NvBlastAsset *>(asset_mem);
 	asset_chunk_count = NvBlastAssetGetChunkCount(asset, blast_log);
 	asset_bond_count = NvBlastAssetGetBondCount(asset, blast_log);
-
 
 	const size_t family_size = NvBlastAssetGetFamilyMemorySize(asset, blast_log);
 	family_mem = aligned_alloc_16(family_size);

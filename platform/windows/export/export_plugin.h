@@ -71,11 +71,15 @@ class EditorExportPlatformWindows : public EditorExportPlatformPC {
 	Error _code_sign(const Ref<EditorExportPreset> &p_preset, const String &p_path);
 
 	String _get_exe_arch(const String &p_path) const;
+	String _get_library_subfolder(const EditorExportPreset *p_preset) const;
+	static bool _is_valid_library_subfolder(const String &p_subfolder);
 
 public:
 	virtual Error export_project(const Ref<EditorExportPreset> &p_preset, bool p_debug, const String &p_path, BitField<EditorExportPlatform::DebugFlags> p_flags = 0, bool p_notify = true) override;
 	virtual Error modify_template(const Ref<EditorExportPreset> &p_preset, bool p_debug, const String &p_path, BitField<EditorExportPlatform::DebugFlags> p_flags) override;
 	virtual Error sign_shared_object(const Ref<EditorExportPreset> &p_preset, bool p_debug, const String &p_path) override;
+	virtual String get_shared_object_default_target(const Ref<EditorExportPreset> &p_preset, const String &p_path) const override;
+	virtual HashMap<String, Variant> get_custom_project_settings(const Ref<EditorExportPreset> &p_preset) const override;
 	virtual List<String> get_binary_extensions(const Ref<EditorExportPreset> &p_preset) const override;
 	virtual void get_export_options(List<ExportOption> *r_options) const override;
 	virtual bool has_valid_export_configuration(const Ref<EditorExportPreset> &p_preset, String &r_error, bool &r_missing_templates, bool p_debug = false) const override;

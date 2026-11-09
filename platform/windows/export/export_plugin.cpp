@@ -251,6 +251,21 @@ Error EditorExportPlatformWindows::export_project(const Ref<EditorExportPreset> 
 	}
 
 	Ref<DirAccess> da = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
+
+	// Folder for the runtime libraries the engine loads by name (and the libraries among the shared objects with
+	// no target of their own, see get_shared_object_default_target()): the export folder itself, or the library
+	// subfolder. ANGLE, AccessKit and PIX stay beside the executable: when present they are load-time imports.
+	const String library_subfolder = _get_library_subfolder(p_preset.ptr());
+	String library_path = path.get_base_dir();
+	if (!library_subfolder.is_empty()) {
+		if (!_is_valid_library_subfolder(library_subfolder)) {
+			add_message(EXPORT_MESSAGE_ERROR, TTR("Prepare Templates"), vformat(TTR("Invalid library subfolder \"%s\": it must be a single folder name."), library_subfolder));
+			return ERR_INVALID_PARAMETER;
+		}
+		library_path = library_path.path_join(library_subfolder);
+		da->make_dir_recursive(library_path);
+	}
+
 	int export_angle = p_preset->get("application/export_angle");
 	bool include_angle_libs = false;
 	if (export_angle == 0) {
@@ -279,24 +294,25 @@ Error EditorExportPlatformWindows::export_project(const Ref<EditorExportPreset> 
 		include_d3d12_extra_libs = true;
 	}
 	if (include_d3d12_extra_libs) {
+		const String agility_sdk_path = agility_sdk_multiarch ? library_path.path_join(arch) : library_path;
 		if (da->file_exists(template_path.get_base_dir().path_join("D3D12Core." + arch + ".dll"))) {
-			if (agility_sdk_multiarch) {
-				da->make_dir_recursive(path.get_base_dir().path_join(arch));
-				da->copy(template_path.get_base_dir().path_join("D3D12Core." + arch + ".dll"), path.get_base_dir().path_join(arch).path_join("D3D12Core.dll"), get_chmod_flags());
-			} else {
-				da->copy(template_path.get_base_dir().path_join("D3D12Core." + arch + ".dll"), path.get_base_dir().path_join("D3D12Core.dll"), get_chmod_flags());
-			}
+			da->make_dir_recursive(agility_sdk_path);
+			da->copy(template_path.get_base_dir().path_join("D3D12Core." + arch + ".dll"), agility_sdk_path.path_join("D3D12Core.dll"), get_chmod_flags());
 		}
 		if (da->file_exists(template_path.get_base_dir().path_join("d3d12SDKLayers." + arch + ".dll"))) {
-			if (agility_sdk_multiarch) {
-				da->make_dir_recursive(path.get_base_dir().path_join(arch));
-				da->copy(template_path.get_base_dir().path_join("d3d12SDKLayers." + arch + ".dll"), path.get_base_dir().path_join(arch).path_join("d3d12SDKLayers.dll"), get_chmod_flags());
-			} else {
-				da->copy(template_path.get_base_dir().path_join("d3d12SDKLayers." + arch + ".dll"), path.get_base_dir().path_join("d3d12SDKLayers.dll"), get_chmod_flags());
-			}
+			da->make_dir_recursive(agility_sdk_path);
+			da->copy(template_path.get_base_dir().path_join("d3d12SDKLayers." + arch + ".dll"), agility_sdk_path.path_join("d3d12SDKLayers.dll"), get_chmod_flags());
 		}
 		if (da->file_exists(template_path.get_base_dir().path_join("WinPixEventRuntime." + arch + ".dll"))) {
 			da->copy(template_path.get_base_dir().path_join("WinPixEventRuntime." + arch + ".dll"), path.get_base_dir().path_join("WinPixEventRuntime.dll"), get_chmod_flags());
+		}
+	}
+
+	// Streamline (DLSS): the interposer and its plugins, each optional, copied when they sit next to the template.
+	static const char *streamline_libs[] = { "sl.interposer.dll", "sl.common.dll", "sl.dlss.dll", "nvngx_dlss.dll" };
+	for (const char *streamline_lib : streamline_libs) {
+		if (da->file_exists(template_path.get_base_dir().path_join(streamline_lib))) {
+			da->copy(template_path.get_base_dir().path_join(streamline_lib), library_path.path_join(streamline_lib), get_chmod_flags());
 		}
 	}
 
@@ -399,6 +415,11 @@ String EditorExportPlatformWindows::get_export_option_warning(const EditorExport
 					return TTR("Invalid file version.");
 				}
 			}
+		} else if (p_name == "application/library_subfolder") {
+			const String library_subfolder = _get_library_subfolder(p_preset);
+			if (!library_subfolder.is_empty() && !_is_valid_library_subfolder(library_subfolder)) {
+				return TTR("Invalid library subfolder: it must be a single folder name, without path separators.");
+			}
 		} else if (p_name == "application/product_version") {
 			String product_version = p_preset->get("application/product_version");
 			if (!product_version.is_empty()) {
@@ -434,7 +455,7 @@ bool EditorExportPlatformWindows::get_export_option_visibility(const EditorExpor
 
 	// Hide resources.
 	bool mod_res = p_preset->get("application/modify_resources");
-	if (!mod_res && p_option != "application/modify_resources" && p_option != "application/export_angle" && p_option != "application/export_d3d12" && p_option != "application/d3d12_agility_sdk_multiarch" && p_option.begins_with("application/")) {
+	if (!mod_res && p_option != "application/modify_resources" && p_option != "application/export_angle" && p_option != "application/export_d3d12" && p_option != "application/d3d12_agility_sdk_multiarch" && p_option != "application/library_subfolder" && p_option.begins_with("application/")) {
 		return false;
 	}
 
@@ -485,6 +506,7 @@ void EditorExportPlatformWindows::get_export_options(List<ExportOption> *r_optio
 	r_options->push_back(ExportOption(PropertyInfo(Variant::INT, "application/export_angle", PROPERTY_HINT_ENUM, "Auto,Yes,No"), 0, true));
 	r_options->push_back(ExportOption(PropertyInfo(Variant::INT, "application/export_d3d12", PROPERTY_HINT_ENUM, "Auto,Yes,No"), 0, true));
 	r_options->push_back(ExportOption(PropertyInfo(Variant::BOOL, "application/d3d12_agility_sdk_multiarch"), true, true));
+	r_options->push_back(ExportOption(PropertyInfo(Variant::STRING, "application/library_subfolder", PROPERTY_HINT_PLACEHOLDER_TEXT, "Leave empty to keep libraries beside the executable"), "", false, true));
 
 	String run_script = "Expand-Archive -LiteralPath '{temp_dir}\\{archive_name}' -DestinationPath '{temp_dir}'\n"
 						"$action = New-ScheduledTaskAction -Execute '{temp_dir}\\{exe_name}' -Argument '{cmd_args}'\n"
@@ -716,6 +738,36 @@ Error EditorExportPlatformWindows::_code_sign(const Ref<EditorExportPreset> &p_p
 #endif
 
 	return OK;
+}
+
+String EditorExportPlatformWindows::_get_library_subfolder(const EditorExportPreset *p_preset) const {
+	const Variant library_subfolder = p_preset->get("application/library_subfolder");
+	return library_subfolder.get_type() == Variant::STRING ? String(library_subfolder).strip_edges() : String();
+}
+
+bool EditorExportPlatformWindows::_is_valid_library_subfolder(const String &p_subfolder) {
+	// Must match what OS_Windows::get_runtime_library_dir() accepts.
+	return !p_subfolder.is_empty() && p_subfolder != "." && p_subfolder != ".." && p_subfolder.is_valid_filename() && !p_subfolder.contains_char('/') && !p_subfolder.contains_char('\\');
+}
+
+String EditorExportPlatformWindows::get_shared_object_default_target(const Ref<EditorExportPreset> &p_preset, const String &p_path) const {
+	// Libraries (GDExtension libraries and their dependencies, the PhysX module's DLLs) go to the library
+	// subfolder; other files, such as a license notice, stay where they were (beside the executable).
+	if (p_path.get_extension().to_lower() != "dll") {
+		return String();
+	}
+	const String library_subfolder = _get_library_subfolder(p_preset.ptr());
+	return _is_valid_library_subfolder(library_subfolder) ? library_subfolder : String();
+}
+
+HashMap<String, Variant> EditorExportPlatformWindows::get_custom_project_settings(const Ref<EditorExportPreset> &p_preset) const {
+	HashMap<String, Variant> settings;
+	const String library_subfolder = _get_library_subfolder(p_preset.ptr());
+	if (_is_valid_library_subfolder(library_subfolder)) {
+		// Read by OS_Windows::get_runtime_library_dir(); not a registered project setting.
+		settings["application/run/windows_library_subfolder"] = library_subfolder;
+	}
+	return settings;
 }
 
 bool EditorExportPlatformWindows::has_valid_export_configuration(const Ref<EditorExportPreset> &p_preset, String &r_error, bool &r_missing_templates, bool p_debug) const {

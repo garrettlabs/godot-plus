@@ -63,6 +63,13 @@
 
 #include "core/config/engine.h"
 #include "core/config/project_settings.h"
+#include "core/os/os.h"
+
+#ifdef _WIN32
+// Folder sl.interposer.dll was loaded from when that was the export's library subfolder; Streamline is then told
+// to look for its plugins (sl.common, sl.dlss, ...) there too. Empty: Streamline's default (beside the executable).
+static Char16String streamline_plugin_dir;
+#endif
 
 StreamlineContext &StreamlineContext::get() {
 	static StreamlineContext _context;
@@ -71,10 +78,12 @@ StreamlineContext &StreamlineContext::get() {
 
 void StreamlineContext::load_functions(bool d3d12) {
 #ifdef _WIN32
-	HMODULE streamline = LoadLibraryA("sl.interposer.dll");
+	String interposer_dir;
+	HMODULE streamline = (HMODULE)OS::get_singleton()->load_runtime_library("sl.interposer.dll", &interposer_dir);
 	if (streamline == nullptr) {
 		return;
 	}
+	streamline_plugin_dir = interposer_dir.is_empty() ? Char16String() : interposer_dir.replace_char('/', '\\').utf16();
 #define SL_GETPROC(type, name) (type *)(void *)GetProcAddress(streamline, name)
 	this->slInit = SL_GETPROC(PFun_slInit, "slInit");
 	this->slShutdown = SL_GETPROC(PFun_slShutdown, "slShutdown");
@@ -358,6 +367,14 @@ void StreamlineContext::initialize(bool d3d12) {
 
 	pref.featuresToLoad = featuresToLoad.ptr();
 	pref.numFeaturesToLoad = featuresToLoad.size();
+
+#ifdef _WIN32
+	const wchar_t *plugin_paths[1] = { (const wchar_t *)streamline_plugin_dir.get_data() };
+	if (streamline_plugin_dir.length() > 0) {
+		pref.pathsToPlugins = plugin_paths;
+		pref.numPathsToPlugins = 1;
+	}
+#endif
 
 	pref.renderAPI = d3d12 ? sl::RenderAPI::eD3D12 : sl::RenderAPI::eVulkan;
 	pref.applicationId = 0x90d07004;

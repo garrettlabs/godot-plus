@@ -92,7 +92,19 @@ RenderingContextDriverD3D12::~RenderingContextDriverD3D12() {
 
 Error RenderingContextDriverD3D12::_init_device_factory() {
 	uint32_t agility_sdk_version = GLOBAL_GET("rendering/rendering_device/d3d12/agility_sdk_version");
-	String agility_sdk_path = String(".\\") + Engine::get_singleton()->get_architecture_name();
+	const String arch_name = Engine::get_singleton()->get_architecture_name();
+	// Agility SDK locations relative to the executable, tried in order: an export's library subfolder
+	// (with and without the architecture folder) when it has one, then the architecture folder and the
+	// executable's own folder.
+	Vector<String> agility_sdk_paths;
+	const String library_dir = OS::get_singleton()->get_runtime_library_dir();
+	if (!library_dir.is_empty()) {
+		const String subfolder = library_dir.get_file();
+		agility_sdk_paths.push_back(".\\" + subfolder + "\\" + arch_name);
+		agility_sdk_paths.push_back(".\\" + subfolder + "\\");
+	}
+	agility_sdk_paths.push_back(".\\" + arch_name);
+	agility_sdk_paths.push_back(".\\");
 
 	lib_d3d12 = LoadLibraryW(L"D3D12.dll");
 	ERR_FAIL_NULL_V(lib_d3d12, ERR_CANT_CREATE);
@@ -107,6 +119,7 @@ Error RenderingContextDriverD3D12::_init_device_factory() {
 
 	// Streamline doesn't currently support device factories, so fall back to default D3D12CreateDevice
 	if (Streamline::get_singleton()->get_internal_parameter(STREAMLINE_INTERNAL_PARAMETER_FUNC_D3D12GetInterface)) {
+		print_verbose("D3D12: Streamline is loaded; using D3D12CreateDevice without an Agility SDK device factory.");
 		return OK;
 	}
 
@@ -119,11 +132,17 @@ Error RenderingContextDriverD3D12::_init_device_factory() {
 	ComPtr<ID3D12SDKConfiguration1> sdk_config;
 	HRESULT hr = d3d_D3D12GetInterface(CLSID_D3D12SDKConfigurationGodot, IID_PPV_ARGS(sdk_config.GetAddressOf()));
 	if (SUCCEEDED(hr)) {
-		hr = sdk_config->CreateDeviceFactory(agility_sdk_version, agility_sdk_path.ascii().get_data(), IID_PPV_ARGS(device_factory.GetAddressOf()));
-		if (FAILED(hr)) {
-			sdk_config->CreateDeviceFactory(agility_sdk_version, ".\\", IID_PPV_ARGS(device_factory.GetAddressOf()));
+		for (const String &agility_sdk_path : agility_sdk_paths) {
+			hr = sdk_config->CreateDeviceFactory(agility_sdk_version, agility_sdk_path.utf8().get_data(), IID_PPV_ARGS(device_factory.GetAddressOf()));
+			if (SUCCEEDED(hr)) {
+				print_verbose(vformat("D3D12: Agility SDK %d loaded from \"%s\".", agility_sdk_version, agility_sdk_path));
+				break;
+			}
 		}
-		// If both calls failed, device factory is going to be nullptr, and D3D12CreateDevice is going to be used as fallback.
+		// If every call failed, device factory is going to be nullptr, and D3D12CreateDevice is going to be used as fallback.
+		if (!device_factory) {
+			print_verbose("D3D12: no Agility SDK found beside the executable; using the system D3D12 runtime.");
+		}
 	}
 	return OK;
 }

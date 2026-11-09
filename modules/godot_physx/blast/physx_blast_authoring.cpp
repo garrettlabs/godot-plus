@@ -31,6 +31,7 @@
 #include "physx_blast_authoring.h"
 
 #include "../godot_physx_server_3d.h"
+#include "physx_blast_runtime.h"
 
 #include "core/io/image.h"
 #include "core/object/class_db.h"
@@ -331,6 +332,9 @@ Ref<PhysXBlastAsset> PhysXBlastAuthoring::fracture_mesh(const Ref<Mesh> &p_mesh,
 Ref<PhysXBlastAsset> PhysXBlastAuthoring::fracture_mesh_arrays(const Array &p_surface_arrays, int p_site_count, int p_seed, FracturePattern p_pattern, const Ref<Image> &p_cutout_image) {
 	last_error = String();
 	last_warnings.clear();
+	if (!PhysXBlastRuntime::is_available()) {
+		return _fail("PhysXBlastAuthoring: the Blast libraries are not loaded.");
+	}
 	PxPhysics *physics = GodotPhysXServer3D::get_singleton() ? GodotPhysXServer3D::get_singleton()->get_px_physics() : nullptr;
 	if (!physics) {
 		return _fail("PhysXBlastAuthoring: PhysX not initialized.");
