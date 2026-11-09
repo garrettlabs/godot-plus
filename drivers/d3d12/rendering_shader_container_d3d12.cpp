@@ -1111,6 +1111,16 @@ RenderingDeviceCommons::ShaderSpirvVersion RenderingShaderContainerFormatD3D12::
 	return SHADER_SPIRV_VERSION_1_5;
 }
 
+bool RenderingShaderContainerFormatD3D12::can_compile_ray_query() const {
+	// Only a NIR library whose DXIL back end emits ray queries can translate them (see drivers/d3d12/SCsub).
+	// The stock library cannot, and its translation of such shaders is not safe to attempt.
+#ifdef D3D12_NIR_RAYTRACING_ENABLED
+	return true;
+#else
+	return false;
+#endif
+}
+
 RenderingShaderContainerFormatD3D12::RenderingShaderContainerFormatD3D12() {
 	glsl_type_singleton_init_or_ref();
 }

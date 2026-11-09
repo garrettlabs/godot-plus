@@ -312,5 +312,5 @@ public:
 	virtual ShaderLanguageVersion get_shader_language_version() const = 0;
 	virtual ShaderSpirvVersion get_shader_spirv_version(ShaderStage p_stage) const = 0;
 	// Whether SPIR-V using ray queries (GL_EXT_ray_query) can be translated to this format.
-	virtual bool can_compile_ray_query() const { return false; } // Turn on for D3D12 once its ray tracing support lands.
+	virtual bool can_compile_ray_query() const { return false; }
 };
