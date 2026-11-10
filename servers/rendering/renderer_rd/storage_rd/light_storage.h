@@ -852,6 +852,9 @@ public:
 	void free_light_data();
 	void set_max_lights(const uint32_t p_max_lights);
 	RID get_omni_light_buffer() { return omni_light_buffer; }
+	// Lights written to the omni and spot buffers by the last update_light_buffers() (view space, nearest first).
+	uint32_t get_omni_light_count() const { return omni_light_count; }
+	uint32_t get_spot_light_count() const { return spot_light_count; }
 	RID get_spot_light_buffer() { return spot_light_buffer; }
 	RID get_area_light_buffer() { return area_light_buffer; }
 	RID get_directional_light_buffer() { return directional_light_buffer; }

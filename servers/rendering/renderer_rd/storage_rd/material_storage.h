@@ -497,6 +497,8 @@ public:
 
 	virtual void material_set_param(RID p_material, const StringName &p_param, const Variant &p_value) override;
 	virtual Variant material_get_param(RID p_material, const StringName &p_param) const override;
+	// The value the shader sees: the material's parameter if set, else the shader's default for that uniform.
+	Variant material_get_param_or_default(RID p_material, const StringName &p_param) const;
 
 	virtual void material_set_next_pass(RID p_material, RID p_next_material) override;
 	virtual void material_set_render_priority(RID p_material, int priority) override;

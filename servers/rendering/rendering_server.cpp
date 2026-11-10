@@ -3702,6 +3702,10 @@ void RenderingServer::init() {
 	GLOBAL_DEF("rendering/raytracing/ambient_occlusion/enabled", true);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/raytracing/ambient_occlusion/rays_per_pixel", PROPERTY_HINT_RANGE, "1,8,1"), 2);
 	GLOBAL_DEF("rendering/raytracing/ambient_occlusion/denoise", true);
+	GLOBAL_DEF("rendering/raytracing/reflections/enabled", true);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/raytracing/reflections/shadowed_lights", PROPERTY_HINT_RANGE, "0,4,1"), 2);
+	GLOBAL_DEF("rendering/raytracing/reflections/denoise", true);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/raytracing/reflections/debug_view", PROPERTY_HINT_ENUM, "Disabled,Hit Albedo,Hit Normal,Shading Tier,Reflection Buffer,Table Shading Only"), 0);
 
 	GLOBAL_DEF_RST("rendering/lights_and_shadows/use_physical_light_units", false);
 

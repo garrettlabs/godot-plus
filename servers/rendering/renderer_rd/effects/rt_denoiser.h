@@ -37,8 +37,9 @@
 
 namespace RendererRD {
 
-// Spatio-temporal denoiser for a single channel ray traced signal in [0, 1] (such as ambient occlusion visibility)
-// traced at the internal resolution. Temporal accumulation with camera reprojection, depth and normal rejection
+// Spatio-temporal denoiser for a ray traced signal traced at the internal resolution: a single channel in [0, 1]
+// (such as ambient occlusion visibility, denoise()) or an RGBA colour whose history and blur scale with the surface
+// roughness (such as reflections, denoise_color()). Temporal accumulation with camera reprojection, depth and normal rejection
 // and a neighborhood clamp, then edge-aware a-trous filtering that is wide where the history is short. Its
 // history textures live in the render buffers under the context the caller names; the camera state is in History.
 class RTDenoiser {
@@ -83,6 +84,8 @@ private:
 	enum Mode {
 		MODE_TEMPORAL,
 		MODE_SPATIAL,
+		MODE_TEMPORAL_COLOR,
+		MODE_SPATIAL_COLOR,
 		MODE_MAX
 	};
 
@@ -90,6 +93,9 @@ private:
 	RID shader_version;
 	RID pipelines[MODE_MAX];
 	RID params_buffer;
+	RID params_buffer_color; // Its own, so a scalar and a colour signal can be filtered in the same frame.
+
+	void _update_params(RID p_buffer, const Size2i &p_size, bool p_history_valid, const Projection &p_projection, const Transform3D &p_cam_transform, const History &p_history, const Settings &p_settings);
 
 public:
 	RTDenoiser();
@@ -97,6 +103,10 @@ public:
 
 	// Denoises p_signal (R16F, sampled) and returns the filtered R16F texture, owned by the render buffers.
 	RID denoise(Ref<RenderSceneBuffersRD> p_render_buffers, const StringName &p_context, History &r_history, RID p_signal, RID p_depth, RID p_normal_roughness, const Projection &p_projection, const Transform3D &p_cam_transform, uint64_t p_frame, const Settings &p_settings);
+
+	// Denoises p_signal (RGBA16F, sampled) into p_destination (RGBA16F, storage). A pixel's history length and blur
+	// grow with its roughness: a mirror keeps the current frame, unblurred.
+	void denoise_color(Ref<RenderSceneBuffersRD> p_render_buffers, const StringName &p_context, History &r_history, RID p_signal, RID p_destination, RID p_depth, RID p_normal_roughness, const Projection &p_projection, const Transform3D &p_cam_transform, uint64_t p_frame, const Settings &p_settings);
 };
 
 } // namespace RendererRD
