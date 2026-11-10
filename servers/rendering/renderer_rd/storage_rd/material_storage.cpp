@@ -2600,6 +2600,21 @@ Variant MaterialStorage::material_get_param(RID p_material, const StringName &p_
 	}
 }
 
+Variant MaterialStorage::material_get_param_or_default(RID p_material, const StringName &p_param) const {
+	Material *material = material_owner.get_or_null(p_material);
+	if (material == nullptr) {
+		return Variant();
+	}
+	const Variant *value = material->params.getptr(p_param);
+	if (value) {
+		return *value;
+	}
+	if (material->shader && material->shader->data) {
+		return material->shader->data->get_default_parameter(p_param);
+	}
+	return Variant();
+}
+
 void MaterialStorage::material_set_next_pass(RID p_material, RID p_next_material) {
 	Material *material = material_owner.get_or_null(p_material);
 	ERR_FAIL_NULL(material);

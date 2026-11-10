@@ -456,6 +456,17 @@ public:
 	// The BLAS of a deformed (skinned or blend shape) mesh instance surface, refitted when its vertices changed.
 	// r_deformed is false when the surface has no deformed vertices of its own; use mesh_surface_get_blas() then.
 	RID mesh_instance_surface_get_blas(RID p_mesh_instance, uint32_t p_surface, bool p_allow_build, RTBLASOperation &r_operation, bool &r_deformed);
+
+	// The buffers a surface's BLAS was built from, for effects that read the hit triangle through buffer addresses.
+	struct RTGeometry {
+		RID vertex_buffer; // Positions: R32G32B32_SFLOAT (stride 12), or R16G16B16A16_UNORM (stride 8) when packed.
+		RID index_buffer; // Invalid for non-indexed surfaces.
+		bool packed = false; // Positions normalized to the surface AABB; the TLAS instance transform scales them back.
+		bool index_16 = false;
+	};
+	bool mesh_surface_get_rt_geometry(void *p_surface, RTGeometry &r_geometry) const;
+	// The deformed vertex buffer the instance's BLAS uses this frame (R32G32B32_SFLOAT); invalid if not deformed.
+	RID mesh_instance_surface_get_rt_vertex_buffer(RID p_mesh_instance, uint32_t p_surface) const;
 	// CPU copy of the current 3D instance transforms (12 floats each, row-major 3x4, at r_data + i * r_stride).
 	bool multimesh_get_rt_transforms(RID p_multimesh, const float *&r_data, uint32_t &r_stride, uint32_t &r_count);
 

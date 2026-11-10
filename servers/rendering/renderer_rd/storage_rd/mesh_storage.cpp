@@ -1154,6 +1154,28 @@ RID MeshStorage::mesh_surface_get_blas(void *p_surface, bool p_allow_build, RTBL
 	return s->rt_blas;
 }
 
+bool MeshStorage::mesh_surface_get_rt_geometry(void *p_surface, RTGeometry &r_geometry) const {
+	const Mesh::Surface *s = reinterpret_cast<const Mesh::Surface *>(p_surface);
+	if (!raytracing_enabled || s == nullptr || s->vertex_buffer.is_null() || !_mesh_surface_rt_supported(s)) {
+		return false;
+	}
+	// Mirrors the BLAS input chosen in mesh_surface_get_blas().
+	r_geometry.packed = (s->format & RSE::ARRAY_FLAG_COMPRESS_ATTRIBUTES) && s->rt_position_buffer.is_null();
+	r_geometry.vertex_buffer = r_geometry.packed ? s->vertex_buffer : (s->rt_position_buffer.is_valid() ? s->rt_position_buffer : s->vertex_buffer);
+	r_geometry.index_buffer = s->index_count ? s->index_buffer : RID();
+	r_geometry.index_16 = s->index_count && s->vertex_count <= 65536 && s->vertex_count > 0;
+	return true;
+}
+
+RID MeshStorage::mesh_instance_surface_get_rt_vertex_buffer(RID p_mesh_instance, uint32_t p_surface) const {
+	const MeshInstance *mi = mesh_instance_owner.get_or_null(p_mesh_instance);
+	if (mi == nullptr || p_surface >= mi->surfaces.size()) {
+		return RID();
+	}
+	const MeshInstance::Surface &mis = mi->surfaces[p_surface];
+	return mis.vertex_buffer[mis.current_buffer];
+}
+
 RID MeshStorage::mesh_instance_surface_get_blas(RID p_mesh_instance, uint32_t p_surface, bool p_allow_build, RTBLASOperation &r_operation, bool &r_deformed) {
 	r_operation = RT_BLAS_NONE;
 	r_deformed = false;

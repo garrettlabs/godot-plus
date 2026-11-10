@@ -133,8 +133,13 @@ void RenderForwardClustered::RenderBufferDataForwardClustered::free_data() {
 		render_buffers->clear_context(RB_SCOPE_SSCS);
 		render_buffers->clear_context(RB_SCOPE_RT_AO);
 		render_buffers->clear_context(RB_SCOPE_RT_AO_DENOISE);
+		render_buffers->clear_context(RB_SCOPE_RT_REFLECTIONS);
+		render_buffers->clear_context(RB_SCOPE_RT_REFLECTIONS_DENOISE);
 	}
 	rt_ao_history = RendererRD::RTDenoiser::History();
+	rt_reflections_active = false;
+	rt_reflections_history = RendererRD::RTDenoiser::History();
+	rt_reflections_last_frame = UINT64_MAX;
 
 	if (cluster_builder) {
 		memdelete(cluster_builder);
@@ -804,7 +809,8 @@ uint32_t RenderForwardClustered::_setup_environment(const RenderDataRD *p_render
 				Ref<RenderBufferDataForwardClustered> rb_data;
 				if (rd->has_custom_data(RB_SCOPE_FORWARD_CLUSTERED)) {
 					rb_data = rd->get_custom_data(RB_SCOPE_FORWARD_CLUSTERED);
-					ss_flags |= (rb_data.is_valid() && !rb_data->ss_effects_data.ssr.half_size) ? SCREEN_SPACE_EFFECTS_FLAGS_RESOLVE_SSR : 0;
+					// Traced reflections are linear and full size: no inverse tonemap, no mip lookup.
+					ss_flags |= (rb_data.is_valid() && !rb_data->ss_effects_data.ssr.half_size && !rb_data->rt_reflections_active) ? SCREEN_SPACE_EFFECTS_FLAGS_RESOLVE_SSR : 0;
 				}
 			}
 		}
@@ -1993,7 +1999,125 @@ void RenderForwardClustered::_render_3d_upscaling(const RenderDataRD *p_render_d
 	}
 }
 
-void RenderForwardClustered::_update_raytracing_scene(const RenderDataRD *p_render_data, RenderBufferDataForwardClustered *p_rb_data, int *r_render_info) {
+RendererRD::RTReflections::Material RenderForwardClustered::_rt_reflection_material(RID p_material) {
+	RendererRD::MaterialStorage *material_storage = RendererRD::MaterialStorage::get_singleton();
+	// Read by uniform name, the names BaseMaterial3D uses; a custom shader that uses the same names is reflected the
+	// same way. Missing names take the defaults below. Colors are read as sRGB, as source_color uniforms are.
+	Color albedo(0.5, 0.5, 0.5);
+	Color emission(0, 0, 0);
+	float emission_energy = 1.0;
+	float roughness = 1.0;
+	float metallic = 0.0;
+	if (p_material.is_valid()) {
+		auto get = [&](const StringName &p_name) -> Variant {
+			return material_storage->material_get_param_or_default(p_material, p_name);
+		};
+		auto to_color = [](const Variant &p_value, Color &r_color) {
+			switch (p_value.get_type()) {
+				case Variant::COLOR:
+					r_color = Color(p_value).srgb_to_linear();
+					break;
+				case Variant::VECTOR3: {
+					const Vector3 v = p_value;
+					r_color = Color(v.x, v.y, v.z).srgb_to_linear();
+				} break;
+				case Variant::VECTOR4: {
+					const Vector4 v = p_value;
+					r_color = Color(v.x, v.y, v.z).srgb_to_linear();
+				} break;
+				default:
+					break;
+			}
+		};
+		auto to_float = [](const Variant &p_value, float &r_value) {
+			if (p_value.get_type() == Variant::FLOAT || p_value.get_type() == Variant::INT) {
+				r_value = p_value;
+			}
+		};
+		static const StringName albedo_name = "albedo";
+		static const StringName emission_name = "emission";
+		static const StringName emission_energy_name = "emission_energy";
+		static const StringName roughness_name = "roughness";
+		static const StringName metallic_name = "metallic";
+		to_color(get(albedo_name), albedo);
+		to_color(get(emission_name), emission);
+		to_float(get(emission_energy_name), emission_energy);
+		to_float(get(roughness_name), roughness);
+		to_float(get(metallic_name), metallic);
+	}
+	RendererRD::RTReflections::Material m = {};
+	m.albedo_metallic[0] = albedo.r;
+	m.albedo_metallic[1] = albedo.g;
+	m.albedo_metallic[2] = albedo.b;
+	m.albedo_metallic[3] = CLAMP(metallic, 0.0f, 1.0f);
+	m.emission_roughness[0] = emission.r * emission_energy;
+	m.emission_roughness[1] = emission.g * emission_energy;
+	m.emission_roughness[2] = emission.b * emission_energy;
+	m.emission_roughness[3] = CLAMP(roughness, 0.0f, 1.0f);
+	return m;
+}
+
+void RenderForwardClustered::_rt_reflection_instance(const GeometryInstanceForwardClustered *p_instance, const GeometryInstanceSurfaceDataCache *p_surface, bool p_deformed, RendererRD::RTReflections::Instance &r_record) {
+	RendererRD::MeshStorage *mesh_storage = RendererRD::MeshStorage::get_singleton();
+	RD *rd = RD::get_singleton();
+
+	// Geometry: the buffers the BLAS was built from, by address. Static surfaces are shared, look them up once.
+	const RendererRD::RTReflections::Instance *cached = p_deformed ? nullptr : rt_reflection_surface_geometry.getptr(p_surface->surface);
+	if (cached) {
+		r_record = *cached;
+	} else {
+		r_record = {};
+		RendererRD::MeshStorage::RTGeometry geometry;
+		if (mesh_storage->mesh_surface_get_rt_geometry(p_surface->surface, geometry)) {
+			RID vertex_buffer = geometry.vertex_buffer;
+			bool packed = geometry.packed;
+			if (p_deformed) {
+				vertex_buffer = mesh_storage->mesh_instance_surface_get_rt_vertex_buffer(p_instance->mesh_instance, p_surface->surface_index);
+				packed = false;
+			}
+			const uint64_t vertex_address = vertex_buffer.is_valid() ? rd->buffer_get_device_address(vertex_buffer) : 0;
+			const uint64_t index_address = geometry.index_buffer.is_valid() ? rd->buffer_get_device_address(geometry.index_buffer) : 0;
+			if (vertex_address != 0 && (geometry.index_buffer.is_null() || index_address != 0)) {
+				r_record.vertex_address[0] = uint32_t(vertex_address);
+				r_record.vertex_address[1] = uint32_t(vertex_address >> 32);
+				r_record.index_address[0] = uint32_t(index_address);
+				r_record.index_address[1] = uint32_t(index_address >> 32);
+				r_record.flags = RendererRD::RTReflections::INSTANCE_FLAG_GEOMETRY | (packed ? RendererRD::RTReflections::INSTANCE_FLAG_PACKED : 0) | (geometry.index_16 ? RendererRD::RTReflections::INSTANCE_FLAG_INDEX_16 : 0);
+			}
+		}
+		if (!p_deformed) {
+			rt_reflection_surface_geometry.insert(p_surface->surface, r_record);
+		}
+	}
+
+	// Material: override, then the instance's surface material, then the mesh's.
+	RID material = p_instance->data->material_override;
+	if (material.is_null()) {
+		const Vector<RID> &surface_materials = p_instance->data->surface_materials;
+		if (p_surface->surface_index < uint32_t(surface_materials.size())) {
+			material = surface_materials[p_surface->surface_index];
+		}
+	}
+	if (material.is_null()) {
+		RID mesh = p_instance->data->base;
+		if (p_instance->data->base_type == RSE::INSTANCE_MULTIMESH) {
+			mesh = mesh_storage->multimesh_get_mesh(mesh);
+		}
+		if (mesh.is_valid()) {
+			material = mesh_storage->mesh_surface_get_material(mesh, p_surface->surface_index);
+		}
+	}
+	const uint32_t *index = rt_reflection_material_index.getptr(material);
+	if (index) {
+		r_record.material = *index;
+	} else {
+		r_record.material = rt_reflection_materials.size();
+		rt_reflection_material_index.insert(material, r_record.material);
+		rt_reflection_materials.push_back(_rt_reflection_material(material));
+	}
+}
+
+void RenderForwardClustered::_update_raytracing_scene(const RenderDataRD *p_render_data, RenderBufferDataForwardClustered *p_rb_data, int *r_render_info, bool p_reflection_tables) {
 	RendererRD::MeshStorage *mesh_storage = RendererRD::MeshStorage::get_singleton();
 	const PagedArray<RenderGeometryInstance *> &instances = *p_render_data->rt_instances;
 	const uint32_t camera_layers = p_render_data->scene_data->camera_visible_layers;
@@ -2009,6 +2133,11 @@ void RenderForwardClustered::_update_raytracing_scene(const RenderDataRD *p_rend
 	uint32_t builds = 0;
 	uint32_t refits = 0;
 	rt_tlas_instances.clear();
+	rt_reflection_instances.clear();
+	rt_reflection_materials.clear();
+	rt_reflection_material_index.clear();
+	rt_reflection_surface_geometry.clear();
+	RendererRD::RTReflections::Instance reflection_record;
 
 	for (uint32_t i = 0; i < instances.size(); i++) {
 		GeometryInstanceForwardClustered *inst = static_cast<GeometryInstanceForwardClustered *>(instances[i]);
@@ -2086,6 +2215,9 @@ void RenderForwardClustered::_update_raytracing_scene(const RenderDataRD *p_rend
 			if (blas.is_null()) {
 				continue;
 			}
+			if (p_reflection_tables) {
+				_rt_reflection_instance(inst, sc, deformed, reflection_record);
+			}
 
 			RD::AccelerationStructureInstance rt_instance;
 			rt_instance.blas = blas;
@@ -2109,11 +2241,17 @@ void RenderForwardClustered::_update_raytracing_scene(const RenderDataRD *p_rend
 					rt_instance.transform = inst->transform * xform * position_transform;
 					rt_instance.id = rt_tlas_instances.size() & 0xFFFFFF;
 					rt_tlas_instances.push_back(rt_instance);
+					if (p_reflection_tables) {
+						rt_reflection_instances.push_back(reflection_record);
+					}
 				}
 			} else {
 				rt_instance.transform = inst->transform * position_transform;
 				rt_instance.id = rt_tlas_instances.size() & 0xFFFFFF;
 				rt_tlas_instances.push_back(rt_instance);
+				if (p_reflection_tables) {
+					rt_reflection_instances.push_back(reflection_record);
+				}
 			}
 		}
 	}
@@ -2132,6 +2270,13 @@ void RenderForwardClustered::_update_raytracing_scene(const RenderDataRD *p_rend
 
 	Error err = RD::get_singleton()->tlas_build(p_rb_data->rt_tlas, Span<RD::AccelerationStructureInstance>(rt_tlas_instances.ptr(), rt_tlas_instances.size()));
 	ERR_FAIL_COND_MSG(err != OK, "Failed to build the ray tracing scene (TLAS).");
+
+	if (p_reflection_tables) {
+		if (rt_reflection_materials.is_empty()) {
+			rt_reflection_materials.push_back(_rt_reflection_material(RID()));
+		}
+		rt_reflections->update_tables(rt_reflection_instances, rt_reflection_materials);
+	}
 
 	if (r_render_info) {
 		r_render_info[RSE::VIEWPORT_RENDER_INFO_RT_TLAS_INSTANCES] += rt_tlas_instances.size();
@@ -2203,6 +2348,69 @@ void RenderForwardClustered::_process_rt_ao(const RenderDataRD *p_render_data, R
 	RD::get_singleton()->draw_command_begin_label("Ray Traced AO");
 	rt_ao->process(rb, p_rb_data->rt_ao_history, p_rb_data->rt_tlas, rb->get_depth_texture(0), p_rb_data->get_normal_roughness(0), rb->get_texture_slice(RB_SCOPE_SSAO, RB_FINAL, 0, 0), p_render_data->scene_data->view_projection[0], p_render_data->scene_data->cam_transform, RSG::rasterizer->get_frame_number(), settings);
 	RD::get_singleton()->draw_command_end_label();
+}
+
+void RenderForwardClustered::_process_rt_reflections(const RenderDataRD *p_render_data, RenderBufferDataForwardClustered *p_rb_data, const Color &p_default_bg_color) {
+	Ref<RenderSceneBuffersRD> rb = p_render_data->render_buffers;
+	RendererRD::LightStorage *light_storage = RendererRD::LightStorage::get_singleton();
+	RID environment = p_render_data->environment;
+	const uint64_t frame = RSG::rasterizer->get_frame_number();
+
+	// Screen-space reflections' own working textures are not needed while they are replaced. The last frame image
+	// stays: the traced hits reuse it, and the copy after the opaque pass keeps it current.
+	if (rb->has_texture(RB_SCOPE_SSR, RB_SSR)) {
+		rb->clear_context(RB_SCOPE_SSR);
+	}
+	ss_effects->allocate_last_frame_buffer(rb, environment_get_ssil_enabled(environment), true);
+	RID destination = rb->create_texture(RB_SCOPE_RT_REFLECTIONS, SNAME("final"), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT, RD::TEXTURE_SAMPLES_1, rb->get_internal_size(), 1);
+	RID last_frame = rb->get_texture_slice(RB_SCOPE_SSLF, RB_LAST_FRAME, 0, 0);
+
+	RendererRD::RTReflections::Settings settings;
+	// Shadow casters, as for the other traced effects: the visible mask would also take in transparent and effect
+	// geometry (light beams, fog cards), which would then reflect as solid surfaces.
+	settings.instance_mask = RT_INSTANCE_MASK_SHADOW_CASTER;
+	settings.shadowed_lights = CLAMP(GLOBAL_GET_CACHED(int, "rendering/raytracing/reflections/shadowed_lights"), 0, 4);
+	settings.denoise = GLOBAL_GET_CACHED(bool, "rendering/raytracing/reflections/denoise");
+	const int debug_view = GLOBAL_GET_CACHED(int, "rendering/raytracing/reflections/debug_view");
+	settings.debug_view = debug_view >= 1 && debug_view <= 3 ? debug_view : 0;
+	// The last frame image is only usable if it was rendered by this view with the camera recorded below.
+	settings.screen_reuse = debug_view != 5 && p_rb_data->rt_reflections_last_frame != UINT64_MAX && p_rb_data->rt_reflections_last_frame + 1 == frame;
+	settings.emission_scale = p_render_data->scene_data->emissive_exposure_normalization > 0.0f ? p_render_data->scene_data->emissive_exposure_normalization : 1.0f;
+
+	// Ambient light at table-shaded hits, as the scene data computes it for the forward pass (sky ambient is not
+	// sampled: its ambient color stands in).
+	Color ambient(0, 0, 0);
+	if (environment.is_valid()) {
+		const RSE::EnvironmentBG bg = environment_get_background(environment);
+		const RSE::EnvironmentAmbientSource source = environment_get_ambient_source(environment);
+		if (source == RSE::ENV_AMBIENT_SOURCE_BG && (bg == RSE::ENV_BG_CLEAR_COLOR || bg == RSE::ENV_BG_COLOR)) {
+			const Color color = (bg == RSE::ENV_BG_CLEAR_COLOR ? p_default_bg_color : environment_get_bg_color(environment)).srgb_to_linear();
+			const float energy = environment_get_bg_energy_multiplier(environment);
+			ambient = Color(color.r * energy, color.g * energy, color.b * energy);
+		} else if (source != RSE::ENV_AMBIENT_SOURCE_DISABLED) {
+			const Color color = environment_get_ambient_light(environment).srgb_to_linear();
+			const float energy = environment_get_ambient_light_energy(environment);
+			ambient = Color(color.r * energy, color.g * energy, color.b * energy);
+		}
+	}
+	settings.ambient = ambient;
+
+	RendererRD::RTReflections::Lights lights;
+	lights.omni_buffer = light_storage->get_omni_light_buffer();
+	lights.spot_buffer = light_storage->get_spot_light_buffer();
+	lights.directional_buffer = light_storage->get_directional_light_buffer();
+	lights.omni_count = light_storage->get_omni_light_count();
+	lights.spot_count = light_storage->get_spot_light_count();
+	lights.directional_count = p_render_data->directional_light_count;
+
+	RENDER_TIMESTAMP("Ray Traced Reflections");
+	RD::get_singleton()->draw_command_begin_label("Ray Traced Reflections");
+	rt_reflections->process(rb, p_rb_data->rt_reflections_history, p_rb_data->rt_tlas, rb->get_depth_texture(0), p_rb_data->get_normal_roughness(0), last_frame, destination, lights, p_render_data->scene_data->view_projection[0], p_render_data->scene_data->cam_transform, p_rb_data->rt_reflections_prev_projection, p_rb_data->rt_reflections_prev_cam_transform, frame, settings);
+	RD::get_singleton()->draw_command_end_label();
+
+	p_rb_data->rt_reflections_prev_projection = p_render_data->scene_data->view_projection[0];
+	p_rb_data->rt_reflections_prev_cam_transform = p_render_data->scene_data->cam_transform;
+	p_rb_data->rt_reflections_last_frame = frame;
 }
 
 void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Color &p_default_bg_color) {
@@ -2415,11 +2623,26 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 
 	RD::get_singleton()->draw_command_end_label();
 
+	// Ray traced reflections replace screen-space reflections for this view when the scene has a TLAS; they need
+	// the reflection tables filled with it.
+	const bool want_rt_reflections = using_ssr && rt_reflections != nullptr && rb_data.is_valid() && p_render_data->rt_instances != nullptr && !is_reflection_probe && !is_multiview && GLOBAL_GET_CACHED(bool, "rendering/raytracing/reflections/enabled");
+
 	if (rb_data.is_valid() && p_render_data->rt_instances != nullptr) {
 		RENDER_TIMESTAMP("Build Ray Tracing Scene");
 		RD::get_singleton()->draw_command_begin_label("Build Ray Tracing Scene");
-		_update_raytracing_scene(p_render_data, rb_data.ptr(), render_info);
+		_update_raytracing_scene(p_render_data, rb_data.ptr(), render_info, want_rt_reflections);
 		RD::get_singleton()->draw_command_end_label();
+	}
+
+	const bool using_rt_reflections = want_rt_reflections && rb_data->rt_tlas.is_valid();
+	if (rb_data.is_valid()) {
+		rb_data->rt_reflections_active = using_rt_reflections;
+		if (rt_reflections != nullptr && !using_rt_reflections && rb->has_texture(RB_SCOPE_RT_REFLECTIONS, SNAME("final"))) {
+			rb->clear_context(RB_SCOPE_RT_REFLECTIONS);
+			rb->clear_context(RB_SCOPE_RT_REFLECTIONS_DENOISE);
+			rb_data->rt_reflections_history = RendererRD::RTDenoiser::History();
+			rb_data->rt_reflections_last_frame = UINT64_MAX;
+		}
 	}
 
 	// Scene culling chose the lights whose shadows are traced (and skipped their shadow maps). The pass needs
@@ -2716,7 +2939,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 			}
 		}
 	}
-	_pre_opaque_render(p_render_data, using_ssao && !using_rt_ao, using_ssil, using_ssr, using_sscs, using_sdfgi || using_voxelgi, normal_roughness_views, voxel_gi_views);
+	_pre_opaque_render(p_render_data, using_ssao && !using_rt_ao, using_ssil, using_ssr && !using_rt_reflections, using_sscs, using_sdfgi || using_voxelgi, normal_roughness_views, voxel_gi_views);
 
 	if (using_rt_shadows) {
 		_process_rt_shadows(p_render_data, rb_data.ptr());
@@ -2724,6 +2947,10 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 
 	if (using_rt_ao) {
 		_process_rt_ao(p_render_data, rb_data.ptr());
+	}
+
+	if (using_rt_reflections) {
+		_process_rt_reflections(p_render_data, rb_data.ptr(), p_default_bg_color);
 	}
 
 	if (current_cluster_builder) {
@@ -3062,6 +3289,12 @@ void RenderForwardClustered::_render_buffers_debug_draw(const RenderDataRD *p_re
 		RID final = rb->get_texture_slice(RB_SCOPE_SSAO, RB_FINAL, 0, 0);
 		Size2i rtsize = texture_storage->render_target_get_size(render_target);
 		copy_effects->copy_to_fb_rect(final, texture_storage->render_target_get_rd_framebuffer(render_target), Rect2(Vector2(), rtsize), false, true);
+	}
+
+	if (rt_reflections != nullptr && GLOBAL_GET_CACHED(int, "rendering/raytracing/reflections/debug_view") > 0 && GLOBAL_GET_CACHED(int, "rendering/raytracing/reflections/debug_view") < 5 && rb->has_texture(RB_SCOPE_RT_REFLECTIONS, SNAME("final"))) {
+		RID final = rb->get_texture(RB_SCOPE_RT_REFLECTIONS, SNAME("final"));
+		Size2i rtsize = texture_storage->render_target_get_size(render_target);
+		copy_effects->copy_to_fb_rect(final, texture_storage->render_target_get_rd_framebuffer(render_target), Rect2(Vector2(), rtsize), false, false);
 	}
 
 	if (get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_SSIL && rb->has_texture(RB_SCOPE_SSIL, RB_FINAL)) {
@@ -4234,7 +4467,9 @@ RID RenderForwardClustered::_setup_render_pass_uniform_set(RenderListType p_rend
 		u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
 
 		RID ssr;
-		if (rb_data.is_valid()) {
+		if (rb_data.is_valid() && rb_data->rt_reflections_active && rb->has_texture(RB_SCOPE_RT_REFLECTIONS, SNAME("final"))) {
+			ssr = rb->get_texture(RB_SCOPE_RT_REFLECTIONS, SNAME("final"));
+		} else if (rb_data.is_valid()) {
 			if (rb_data->ss_effects_data.ssr.half_size) {
 				if (rb->has_texture(RB_SCOPE_SSR, RB_FINAL)) {
 					ssr = rb->get_texture(RB_SCOPE_SSR, RB_FINAL);
@@ -5814,6 +6049,7 @@ RenderForwardClustered::RenderForwardClustered() {
 	if (RendererRD::MeshStorage::get_singleton()->is_raytracing_enabled()) {
 		rt_shadows = memnew(RendererRD::RTShadows);
 		rt_ao = memnew(RendererRD::RTAmbientOcclusion);
+		rt_reflections = memnew(RendererRD::RTReflections);
 	}
 	motion_vectors_store = memnew(RendererRD::MotionVectorsStore);
 #ifdef METAL_MFXTEMPORAL_ENABLED
@@ -5834,6 +6070,10 @@ RenderForwardClustered::~RenderForwardClustered() {
 	if (rt_ao != nullptr) {
 		memdelete(rt_ao);
 		rt_ao = nullptr;
+	}
+	if (rt_reflections != nullptr) {
+		memdelete(rt_reflections);
+		rt_reflections = nullptr;
 	}
 	RD::get_singleton()->free_rid(rt_shadow_default_buffer);
 

@@ -37,6 +37,7 @@
 #include "servers/rendering/renderer_rd/effects/fsr2.h"
 #include "servers/rendering/renderer_rd/effects/motion_vectors_store.h"
 #include "servers/rendering/renderer_rd/effects/rt_ao.h"
+#include "servers/rendering/renderer_rd/effects/rt_reflections.h"
 #include "servers/rendering/renderer_rd/effects/rt_shadows.h"
 #include "servers/rendering/renderer_rd/effects/ss_effects.h"
 #include "servers/rendering/renderer_rd/effects/taa.h"
@@ -139,6 +140,14 @@ public:
 		// Camera state of the ray traced ambient occlusion denoiser's history (its textures are in the render buffers).
 		RendererRD::RTDenoiser::History rt_ao_history;
 
+		// Ray traced reflections replace screen-space reflections in this view (set before the opaque pass).
+		bool rt_reflections_active = false;
+		RendererRD::RTDenoiser::History rt_reflections_history;
+		// The camera that rendered the last frame image the reflections reuse.
+		Projection rt_reflections_prev_projection;
+		Transform3D rt_reflections_prev_cam_transform;
+		uint64_t rt_reflections_last_frame = UINT64_MAX;
+
 		void ensure_specular();
 		bool has_specular() const { return render_buffers->has_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_SPECULAR); }
 		RID get_specular() const { return render_buffers->get_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_SPECULAR); }
@@ -200,7 +209,14 @@ private:
 	uint64_t rt_build_budget_frame = UINT64_MAX;
 	uint32_t rt_blas_builds_this_frame = 0;
 
-	void _update_raytracing_scene(const RenderDataRD *p_render_data, RenderBufferDataForwardClustered *p_rb_data, int *r_render_info);
+	void _update_raytracing_scene(const RenderDataRD *p_render_data, RenderBufferDataForwardClustered *p_rb_data, int *r_render_info, bool p_reflection_tables);
+
+	/* Ray traced reflection tables: one record per TLAS instance, materials deduplicated per frame */
+
+	LocalVector<RendererRD::RTReflections::Instance> rt_reflection_instances;
+	LocalVector<RendererRD::RTReflections::Material> rt_reflection_materials;
+	HashMap<RID, uint32_t> rt_reflection_material_index;
+	HashMap<const void *, RendererRD::RTReflections::Instance> rt_reflection_surface_geometry;
 
 	/* Ray traced shadows */
 
@@ -215,6 +231,12 @@ private:
 	RendererRD::RTAmbientOcclusion *rt_ao = nullptr; // Only with ray tracing enabled: its shader needs ray queries.
 
 	void _process_rt_ao(const RenderDataRD *p_render_data, RenderBufferDataForwardClustered *p_rb_data);
+
+	/* Ray traced reflections */
+
+	RendererRD::RTReflections *rt_reflections = nullptr; // Only with ray tracing enabled: its shader needs ray queries.
+
+	void _process_rt_reflections(const RenderDataRD *p_render_data, RenderBufferDataForwardClustered *p_rb_data, const Color &p_default_bg_color);
 
 	void _update_render_base_uniform_set();
 	RID _setup_sdfgi_render_pass_uniform_set(RID p_albedo_texture, RID p_emission_texture, RID p_emission_aniso_texture, RID p_geom_facing_texture, const RendererRD::MaterialStorage::Samplers &p_samplers, uint32_t p_uniform_buffer_index);
@@ -723,6 +745,8 @@ private:
 
 	void _update_global_pipeline_data_requirements_from_project();
 	void _update_global_pipeline_data_requirements_from_light_storage();
+	RendererRD::RTReflections::Material _rt_reflection_material(RID p_material);
+	void _rt_reflection_instance(const GeometryInstanceForwardClustered *p_instance, const GeometryInstanceSurfaceDataCache *p_surface, bool p_deformed, RendererRD::RTReflections::Instance &r_record);
 	void _geometry_instance_add_surface_with_material(GeometryInstanceForwardClustered *ginstance, uint32_t p_surface, SceneShaderForwardClustered::MaterialData *p_material, uint32_t p_material_id, uint32_t p_shader_id, RID p_mesh);
 	void _geometry_instance_add_surface_with_material_chain(GeometryInstanceForwardClustered *ginstance, uint32_t p_surface, SceneShaderForwardClustered::MaterialData *p_material, RID p_mat_src, RID p_mesh);
 	void _geometry_instance_add_surface(GeometryInstanceForwardClustered *ginstance, uint32_t p_surface, RID p_material, RID p_mesh);
