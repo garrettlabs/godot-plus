@@ -71,6 +71,7 @@ private:
 		float max_history_dynamic;
 		float clamp_sigma;
 		float pad[2];
+		float prev_inv_projection[16]; // Color signal only.
 	};
 	static_assert(sizeof(Params) % 16 == 0);
 
@@ -81,11 +82,18 @@ private:
 		float pad;
 	};
 
+	struct UpsamplePushConstant {
+		int32_t full_size[2];
+		int32_t half_size[2];
+		float depth_to_linear[4];
+	};
+
 	enum Mode {
 		MODE_TEMPORAL,
 		MODE_SPATIAL,
 		MODE_TEMPORAL_COLOR,
 		MODE_SPATIAL_COLOR,
+		MODE_UPSAMPLE_COLOR,
 		MODE_MAX
 	};
 
@@ -105,8 +113,17 @@ public:
 	RID denoise(Ref<RenderSceneBuffersRD> p_render_buffers, const StringName &p_context, History &r_history, RID p_signal, RID p_depth, RID p_normal_roughness, const Projection &p_projection, const Transform3D &p_cam_transform, uint64_t p_frame, const Settings &p_settings);
 
 	// Denoises p_signal (RGBA16F, sampled) into p_destination (RGBA16F, storage). A pixel's history length and blur
-	// grow with its roughness: a mirror keeps the current frame, unblurred.
-	void denoise_color(Ref<RenderSceneBuffersRD> p_render_buffers, const StringName &p_context, History &r_history, RID p_signal, RID p_destination, RID p_depth, RID p_normal_roughness, const Projection &p_projection, const Transform3D &p_cam_transform, uint64_t p_frame, const Settings &p_settings);
+	// grow with its roughness: a mirror keeps the current frame, unblurred. p_hit_distance (R16F, sampled; 0 for no
+	// hit) is the length of each pixel's reflected ray: on smooth surfaces the history is reprojected from where the
+	// reflected point appeared last frame instead of where the surface was.
+	// p_size is the signal's size: the internal size, or half of it (rounded up) for a signal traced at full-size
+	// pixel 2x of each sample; p_depth and p_normal_roughness are then the guides at those pixels.
+	void denoise_color(Ref<RenderSceneBuffersRD> p_render_buffers, const StringName &p_context, History &r_history, RID p_signal, RID p_hit_distance, RID p_destination, RID p_depth, RID p_normal_roughness, const Size2i &p_size, const Projection &p_projection, const Transform3D &p_cam_transform, uint64_t p_frame, const Settings &p_settings);
+
+	// Brings a half-size color signal (traced at full-size pixel 2x of each sample, whose depth and normal-roughness are
+	// in p_guide_depth and p_guide_normal_roughness) up to the full internal size in p_destination, from the samples
+	// that saw the same surface as each pixel.
+	void upsample_color(Ref<RenderSceneBuffersRD> p_render_buffers, RID p_signal, RID p_guide_depth, RID p_guide_normal_roughness, RID p_destination, RID p_depth, RID p_normal_roughness, const Projection &p_projection);
 };
 
 } // namespace RendererRD

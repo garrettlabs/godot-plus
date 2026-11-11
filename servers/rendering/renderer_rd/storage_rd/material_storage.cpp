@@ -2443,6 +2443,7 @@ void MaterialStorage::_material_uniform_set_erased(void *p_material) {
 }
 
 void MaterialStorage::_material_queue_update(Material *material, bool p_uniform, bool p_texture) {
+	material->version = material_version_counter.increment();
 	MutexLock lock(material_update_list_mutex);
 	material->uniform_dirty = material->uniform_dirty || p_uniform;
 	material->texture_dirty = material->texture_dirty || p_texture;
@@ -2491,6 +2492,7 @@ void MaterialStorage::material_initialize(RID p_rid) {
 	material_owner.initialize_rid(p_rid);
 	Material *material = material_owner.get_or_null(p_rid);
 	material->self = p_rid;
+	material->version = material_version_counter.increment();
 }
 
 void MaterialStorage::material_free(RID p_rid) {
@@ -2516,6 +2518,7 @@ void MaterialStorage::material_set_shader(RID p_material, RID p_shader) {
 	Material *material = material_owner.get_or_null(p_material);
 	ERR_FAIL_NULL(material);
 
+	material->version = material_version_counter.increment();
 	if (material->data) {
 		memdelete(material->data);
 		material->data = nullptr;
@@ -2615,6 +2618,54 @@ Variant MaterialStorage::material_get_param_or_default(RID p_material, const Str
 	return Variant();
 }
 
+uint64_t MaterialStorage::material_get_version(RID p_material) const {
+	const Material *material = material_owner.get_or_null(p_material);
+	return material ? material->version : 0;
+}
+
+RID MaterialStorage::material_get_albedo_texture(RID p_material, bool &r_srgb) const {
+	r_srgb = false;
+	const Material *material = material_owner.get_or_null(p_material);
+	if (material == nullptr || material->shader == nullptr || material->shader->data == nullptr) {
+		return RID();
+	}
+	const HashMap<StringName, ShaderLanguage::ShaderNode::Uniform> &uniforms = material->shader->data->uniforms;
+	static const StringName albedo_texture_name = "texture_albedo";
+	const StringName *name = nullptr;
+	const ShaderLanguage::ShaderNode::Uniform *uniform = nullptr;
+	auto usable = [](const ShaderLanguage::ShaderNode::Uniform &p_uniform) {
+		return p_uniform.type == ShaderLanguage::TYPE_SAMPLER2D && p_uniform.scope == ShaderLanguage::ShaderNode::Uniform::SCOPE_LOCAL && p_uniform.array_size == 0;
+	};
+	HashMap<StringName, ShaderLanguage::ShaderNode::Uniform>::ConstIterator albedo = uniforms.find(albedo_texture_name);
+	if (albedo && usable(albedo->value)) {
+		name = &albedo->key;
+		uniform = &albedo->value;
+	} else {
+		for (const KeyValue<StringName, ShaderLanguage::ShaderNode::Uniform> &E : uniforms) {
+			if (usable(E.value) && E.value.use_color && (uniform == nullptr || E.value.texture_order < uniform->texture_order)) {
+				name = &E.key;
+				uniform = &E.value;
+			}
+		}
+	}
+	if (uniform == nullptr) {
+		return RID();
+	}
+	r_srgb = uniform->use_color; // `source_color` on a sampler.
+	const Variant *value = material->params.getptr(*name);
+	if (value) {
+		return value->get_type() == Variant::RID ? RID(*value) : RID();
+	}
+	HashMap<StringName, HashMap<int, RID>>::ConstIterator defaults = material->shader->default_texture_parameter.find(*name);
+	if (defaults) {
+		HashMap<int, RID>::ConstIterator first = defaults->value.find(0);
+		if (first) {
+			return first->value;
+		}
+	}
+	return RID();
+}
+
 void MaterialStorage::material_set_next_pass(RID p_material, RID p_next_material) {
 	Material *material = material_owner.get_or_null(p_material);
 	ERR_FAIL_NULL(material);
@@ -2624,6 +2675,7 @@ void MaterialStorage::material_set_next_pass(RID p_material, RID p_next_material
 	}
 
 	material->next_pass = p_next_material;
+	material->version = material_version_counter.increment();
 	if (material->data) {
 		material->data->set_next_pass(p_next_material);
 	}

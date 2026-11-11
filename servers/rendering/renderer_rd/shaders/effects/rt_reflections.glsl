@@ -9,12 +9,15 @@
 // 1. Screen reuse: if the hit point is the surface the depth buffer shows at its screen position, its colour is read
 //    from last frame's lit image (exact for any material).
 // 2. Table shading: otherwise the hit is lit from a per-instance material record (albedo, roughness, metallic,
-//    emission read from the material's uniforms by name), the view's omni, spot and directional lights (the strongest
-//    few with a shadow ray) and the ambient light. The hit normal comes from the triangle's positions, read through
+//    emission read from the material's uniforms by name; the albedo times the average color of the material's albedo
+//    texture once that is computed), the view's omni, spot and directional lights (the strongest few with a shadow
+//    ray) and the ambient light. The hit normal comes from the triangle's positions, read through
 //    buffer addresses from the vertex and index buffers the BLAS was built from.
 // With view-consistent hits, a hit on screen where the view sees past it (the view did not draw that surface there) is
 // skipped and the ray continues; shadow rays of table shading are not checked (they answer for a light).
 // Output: premultiplied reflection (alpha 1 on a hit, 0 on a miss) and the hit distance.
+// MODE_HALF_SIZE: one ray per 2x2 pixels, traced at the top left one; that pixel's depth and normal-roughness are
+// written beside the result for the denoiser and the upsample.
 
 // glslang only accepts ray queries from GLSL 460 on.
 #extension GL_EXT_ray_query : require
@@ -50,6 +53,10 @@ instances;
 struct Material {
 	vec4 albedo_metallic;
 	vec4 emission_roughness;
+	uint albedo_average; // Slot in texture_averages, 0xFFFFFFFF for none.
+	uint pad0;
+	uint pad1;
+	uint pad2;
 };
 
 layout(set = 0, binding = 4, std430) restrict readonly buffer Materials {
@@ -77,6 +84,11 @@ layout(set = 0, binding = 8) uniform sampler2D last_frame;
 layout(rgba16f, set = 0, binding = 9) uniform restrict writeonly image2D dest_reflection;
 layout(r16f, set = 0, binding = 10) uniform restrict writeonly image2D dest_hit_distance;
 
+#ifdef MODE_HALF_SIZE
+layout(r32f, set = 0, binding = 13) uniform restrict writeonly image2D dest_guide_depth;
+layout(rgba8, set = 0, binding = 14) uniform restrict writeonly image2D dest_guide_normal_roughness;
+#endif
+
 layout(set = 0, binding = 11, std140) uniform Params {
 	mat4 inv_projection; // Clip (reverse Z, Y flipped) to view.
 	mat4 projection; // View to clip.
@@ -98,10 +110,14 @@ layout(set = 0, binding = 11, std140) uniform Params {
 	uint debug_view;
 	uint screen_reuse;
 	uint view_consistent; // Skip hits the view sees past (see rt_view_hit_inc.glsl).
-	uint pad1;
-	uint pad2;
+	ivec2 trace_size; // MODE_HALF_SIZE: the size of the outputs.
 }
 params;
+
+layout(set = 0, binding = 12, std430) restrict readonly buffer TextureAverages {
+	vec4 data[];
+}
+texture_averages;
 
 #include "rt_view_hit_inc.glsl"
 
@@ -289,10 +305,19 @@ vec3 shade_hit(vec3 p_pos_world, vec3 p_normal_world, vec3 p_pos_view, vec3 p_no
 }
 
 void main() {
+#ifdef MODE_HALF_SIZE
+	ivec2 out_pixel = ivec2(gl_GlobalInvocationID.xy);
+	if (any(greaterThanEqual(out_pixel, params.trace_size))) {
+		return;
+	}
+	ivec2 pixel = min(out_pixel * 2, params.screen_size - 1);
+#else
 	ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
 	if (any(greaterThanEqual(pixel, params.screen_size))) {
 		return;
 	}
+	ivec2 out_pixel = pixel;
+#endif
 
 	vec4 result = vec4(0.0);
 	float hit_distance = 0.0;
@@ -397,6 +422,10 @@ void main() {
 			uint instance_index = hit_custom_index;
 			Instance inst = instances.data[instance_index];
 			Material mat = materials.data[inst.material];
+			vec3 albedo = mat.albedo_metallic.rgb;
+			if (mat.albedo_average != 0xFFFFFFFFu) {
+				albedo *= texture_averages.data[mat.albedo_average].rgb;
+			}
 			vec3 hit_normal = -dir;
 			if ((inst.flags & INSTANCE_FLAG_GEOMETRY) != 0u) {
 				uint prim = hit_primitive;
@@ -417,7 +446,6 @@ void main() {
 			}
 
 			if (!reused) {
-				vec3 albedo = mat.albedo_metallic.rgb;
 				// No specular at the hit: metals reflect as a darker diffuse of their colour.
 				vec3 diffuse = albedo * mix(1.0, 0.5, mat.albedo_metallic.a);
 				vec3 normal_view = normalize(mat3(params.world_to_view) * hit_normal);
@@ -426,7 +454,7 @@ void main() {
 			}
 
 			if (params.debug_view == 1u) {
-				color = mat.albedo_metallic.rgb;
+				color = albedo;
 			} else if (params.debug_view == 2u) {
 				color = hit_normal * 0.5 + 0.5;
 			} else if (params.debug_view == 3u) {
@@ -439,6 +467,10 @@ void main() {
 		}
 	}
 
-	imageStore(dest_reflection, pixel, result);
-	imageStore(dest_hit_distance, pixel, vec4(hit_distance));
+#ifdef MODE_HALF_SIZE
+	imageStore(dest_guide_depth, out_pixel, vec4(depth));
+	imageStore(dest_guide_normal_roughness, out_pixel, normal_roughness);
+#endif
+	imageStore(dest_reflection, out_pixel, result);
+	imageStore(dest_hit_distance, out_pixel, vec4(hit_distance));
 }

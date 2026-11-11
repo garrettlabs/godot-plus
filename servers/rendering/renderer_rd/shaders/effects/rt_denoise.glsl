@@ -13,9 +13,16 @@
 // normal; it filters fully where the history is short and fades out where the history is long.
 // SIGNAL_COLOR: the same for an RGBA signal (such as reflections, premultiplied), with the history length in its own
 // texture and both passes scaled by the surface roughness: a mirror keeps one frame and no blur, rough surfaces get
-// the full history and kernel.
+// the full history and kernel. A reflection moves with the reflected point, not with the surface, so on smooth
+// surfaces the history is looked up where the reflected (virtual) point was last frame, found from the reflected
+// ray's length; the lookup moves back to the surface point as roughness blurs the reflection.
+// MODE_UPSAMPLE (with SIGNAL_COLOR): brings a color signal traced and filtered at half size up to full size, from the
+// nearby half-size samples that saw the same surface (depth, normal and roughness of the full-size pixel each sample
+// was traced at), weighted by distance.
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+#ifndef MODE_UPSAMPLE
 
 layout(set = 0, binding = 0, std140) uniform Params {
 	mat4 inv_projection; // Current frame, clip (reverse Z, Y flipped) to view.
@@ -29,6 +36,7 @@ layout(set = 0, binding = 0, std140) uniform Params {
 	float clamp_sigma;
 	float pad0;
 	float pad1;
+	mat4 prev_inv_projection; // SIGNAL_COLOR only: last frame, clip to view.
 }
 params;
 
@@ -40,14 +48,27 @@ layout(push_constant, std430) uniform PushConstant {
 }
 push;
 
+#else
+
+layout(push_constant, std430) uniform PushConstant {
+	ivec2 full_size;
+	ivec2 half_size;
+	vec4 depth_to_linear; // Linear depth = -(x * depth + y) / (z * depth + w).
+}
+push;
+
+#endif // !MODE_UPSAMPLE
+
 layout(set = 1, binding = 0) uniform sampler2D source_depth;
 layout(set = 1, binding = 1) uniform sampler2D source_normal_roughness;
 
+#ifndef MODE_UPSAMPLE
 vec3 view_position(ivec2 p_pixel, float p_depth) {
 	vec2 uv = (vec2(p_pixel) + 0.5) / vec2(params.screen_size);
 	vec4 pos = params.inv_projection * vec4(uv * 2.0 - 1.0, p_depth, 1.0);
 	return pos.xyz / pos.w;
 }
+#endif
 
 #if defined(MODE_TEMPORAL) && !defined(SIGNAL_COLOR)
 
@@ -223,6 +244,12 @@ float roughness_weight(float p_roughness) {
 	return smoothstep(0.04, 0.3, p_roughness);
 }
 
+// How far towards the reflected point the history is reprojected (1 for a sharp reflection, 0 once the roughness
+// blurs it so much that it follows the surface).
+float virtual_weight(float p_roughness) {
+	return 1.0 - smoothstep(0.25, 0.55, p_roughness);
+}
+
 #endif
 
 #if defined(MODE_TEMPORAL) && defined(SIGNAL_COLOR)
@@ -234,6 +261,23 @@ layout(rgba16f, set = 2, binding = 3) uniform restrict writeonly image2D dest_si
 layout(rgba16f, set = 2, binding = 4) uniform restrict writeonly image2D dest_guide;
 layout(set = 2, binding = 5) uniform sampler2D history_length;
 layout(r16f, set = 2, binding = 6) uniform restrict writeonly image2D dest_length;
+layout(set = 2, binding = 7) uniform sampler2D source_hit_distance; // Reflected ray length, 0 for no hit.
+
+// Linear depth in last frame's view at which the ray through p_prev_uv meets the plane through p_point with normal
+// p_normal (both in last frame's view space); negative if it does not.
+float prev_plane_depth(vec2 p_prev_uv, vec3 p_point, vec3 p_normal) {
+	vec2 ndc = p_prev_uv * 2.0 - 1.0;
+	vec4 a4 = params.prev_inv_projection * vec4(ndc, 1.0, 1.0);
+	vec4 b4 = params.prev_inv_projection * vec4(ndc, 0.5, 1.0);
+	vec3 a = a4.xyz / a4.w;
+	vec3 d = b4.xyz / b4.w - a;
+	float denom = dot(p_normal, d);
+	float depth = -1.0;
+	if (abs(denom) > 1e-6 * length(d)) {
+		depth = -(a.z + d.z * (dot(p_normal, p_point - a) / denom));
+	}
+	return depth;
+}
 
 void main() {
 	ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
@@ -252,42 +296,62 @@ void main() {
 
 	vec4 normal_roughness = texelFetch(source_normal_roughness, pixel, 0);
 	bool dynamic = normal_roughness.w > 0.5;
-	float rw = roughness_weight(decode_roughness(normal_roughness.w));
+	float roughness = decode_roughness(normal_roughness.w);
+	float rw = roughness_weight(roughness);
 	vec3 view_pos = view_position(pixel, depth);
 	float linear_depth = -view_pos.z;
-	vec3 normal = normalize(mat3(params.view_to_world) * normalize(normal_roughness.xyz * 2.0 - 1.0));
+	vec3 view_normal = normalize(normal_roughness.xyz * 2.0 - 1.0);
+	vec3 normal = normalize(mat3(params.view_to_world) * view_normal);
 
-	// Neighborhood statistics of this frame's samples, on the same surface only.
-	float sum_w = 0.0;
-	float sum_w2 = 0.0;
-	vec4 sum = vec4(0.0);
-	vec4 sum_sq = vec4(0.0);
-	for (int y = -2; y <= 2; y++) {
-		for (int x = -2; x <= 2; x++) {
-			ivec2 q = clamp(pixel + ivec2(x, y), ivec2(0), params.screen_size - 1);
-			float q_depth = texelFetch(source_depth, q, 0).r;
-			float q_linear = -view_position(q, q_depth).z;
-			float w = (q_depth != 0.0 && abs(q_linear - linear_depth) < 0.05 * linear_depth) ? 1.0 : 0.0;
-			vec4 v = texelFetch(source_signal, q, 0);
-			sum += v * w;
-			sum_sq += v * v * w;
-			sum_w += w;
-			sum_w2 += w * w;
+	// A mirror keeps no history (its single ray is exact), and without history there is nothing to blend: the
+	// current frame is the result, and none of the gathers below are needed.
+	if (rw == 0.0 || params.history_valid == 0u) {
+		imageStore(dest_signal, pixel, current);
+		imageStore(dest_length, pixel, vec4(1.0));
+		imageStore(dest_guide, pixel, vec4(normal, linear_depth));
+		return;
+	}
+
+	// Reproject the reflected point: the surface point pushed along the view ray by the reflected ray's length (the
+	// mean over the 3x3 neighbors on the same surface that hit something), blended back to the surface point as the
+	// roughness rises. Its history pixel shows another point of the same surface, so the depth test expects where last
+	// frame's view ray through it meets this pixel's surface plane.
+	vec3 reproject_pos = view_pos;
+	bool reflected = false;
+	float vw = virtual_weight(roughness);
+	if (params.history_valid != 0u && rw > 0.0 && vw > 0.0) {
+		float hit_sum = 0.0;
+		float hit_count = 0.0;
+		for (int y = -1; y <= 1; y++) {
+			for (int x = -1; x <= 1; x++) {
+				ivec2 q = clamp(pixel + ivec2(x, y), ivec2(0), params.screen_size - 1);
+				float q_depth = texelFetch(source_depth, q, 0).r;
+				float q_hit = texelFetch(source_hit_distance, q, 0).r;
+				if (q_hit > 0.0 && q_depth != 0.0 && abs(-view_position(q, q_depth).z - linear_depth) < 0.05 * linear_depth) {
+					hit_sum += q_hit;
+					hit_count += 1.0;
+				}
+			}
+		}
+		if (hit_count > 0.0) {
+			vec3 view_dir = normalize(view_pos - view_position(pixel, 1.0)); // Also right for orthogonal projections.
+			reproject_pos = view_pos + view_dir * (hit_sum / hit_count) * vw;
+			reflected = true;
 		}
 	}
-	vec4 mean = sum / max(sum_w, 1.0);
-	vec4 variance = max(vec4(0.0), sum_sq / max(sum_w, 1.0) - mean * mean);
-	float effective_n = sum_w * sum_w / max(sum_w2, 1.0);
-	vec4 sigma_mean = sqrt(variance / max(effective_n, 1.0));
 
-	vec3 prev_view = (params.reprojection * vec4(view_pos, 1.0)).xyz;
+	vec3 prev_view = (params.reprojection * vec4(reproject_pos, 1.0)).xyz;
 	vec4 prev_clip = params.prev_projection * vec4(prev_view, 1.0);
 	vec2 prev_uv = (prev_clip.xy / prev_clip.w) * 0.5 + 0.5;
 	float prev_linear = -prev_view.z;
+	if (reflected) {
+		vec3 prev_surface = (params.reprojection * vec4(view_pos, 1.0)).xyz;
+		prev_linear = prev_plane_depth(prev_uv, prev_surface, mat3(params.reprojection) * view_normal);
+	}
 
 	vec4 history = vec4(0.0);
 	float length_in = 0.0;
-	if (params.history_valid != 0u && rw > 0.0 && all(greaterThanEqual(prev_uv, vec2(0.0))) && all(lessThan(prev_uv, vec2(1.0)))) {
+	if (params.history_valid != 0u && rw > 0.0 && (!reflected || (prev_clip.w > 0.0 && prev_linear > 0.0)) && all(greaterThanEqual(prev_uv, vec2(0.0))) && all(lessThan(prev_uv, vec2(1.0)))) {
 		vec2 texel = prev_uv * vec2(params.screen_size) - 0.5;
 		ivec2 base = ivec2(floor(texel));
 		vec2 f = texel - vec2(base);
@@ -319,6 +383,29 @@ void main() {
 	vec4 result = current;
 	float length_out = 1.0;
 	if (length_in > 0.0) {
+		// Neighborhood statistics of this frame's samples, on the same surface only.
+		float sum_w = 0.0;
+		float sum_w2 = 0.0;
+		vec4 sum = vec4(0.0);
+		vec4 sum_sq = vec4(0.0);
+		for (int y = -2; y <= 2; y++) {
+			for (int x = -2; x <= 2; x++) {
+				ivec2 q = clamp(pixel + ivec2(x, y), ivec2(0), params.screen_size - 1);
+				float q_depth = texelFetch(source_depth, q, 0).r;
+				float q_linear = -view_position(q, q_depth).z;
+				float w = (q_depth != 0.0 && abs(q_linear - linear_depth) < 0.05 * linear_depth) ? 1.0 : 0.0;
+				vec4 v = texelFetch(source_signal, q, 0);
+				sum += v * w;
+				sum_sq += v * v * w;
+				sum_w += w;
+				sum_w2 += w * w;
+			}
+		}
+		vec4 mean = sum / max(sum_w, 1.0);
+		vec4 variance = max(vec4(0.0), sum_sq / max(sum_w, 1.0) - mean * mean);
+		float effective_n = sum_w * sum_w / max(sum_w2, 1.0);
+		vec4 sigma_mean = sqrt(variance / max(effective_n, 1.0));
+
 		vec4 box = params.clamp_sigma * sigma_mean + 0.02 * max(mean, vec4(0.05));
 		history = clamp(history, mean - box, mean + box);
 		// A mirror keeps no history (its single ray is exact); rough surfaces keep the most.
@@ -393,3 +480,67 @@ void main() {
 }
 
 #endif // MODE_SPATIAL && SIGNAL_COLOR
+
+#if defined(MODE_UPSAMPLE) && defined(SIGNAL_COLOR)
+
+layout(set = 2, binding = 0) uniform sampler2D source_signal; // Half size.
+layout(set = 2, binding = 1) uniform sampler2D source_guide_depth; // Half size: depth where each sample was traced.
+layout(set = 2, binding = 2) uniform sampler2D source_guide_normal; // Half size: normal and roughness there.
+layout(rgba16f, set = 2, binding = 3) uniform restrict writeonly image2D dest_signal; // Full size.
+
+float linearize(float p_depth) {
+	return -(push.depth_to_linear.x * p_depth + push.depth_to_linear.y) / (push.depth_to_linear.z * p_depth + push.depth_to_linear.w);
+}
+
+void main() {
+	ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+	if (any(greaterThanEqual(pixel, push.full_size))) {
+		return;
+	}
+
+	vec4 result = vec4(0.0);
+	float depth = texelFetch(source_depth, pixel, 0).r;
+	if (depth != 0.0) {
+		float linear_depth = linearize(depth);
+		vec4 normal_roughness = texelFetch(source_normal_roughness, pixel, 0);
+		vec3 normal = normalize(normal_roughness.xyz * 2.0 - 1.0);
+		float rw = roughness_weight(decode_roughness(normal_roughness.w));
+		float tolerance = 0.01 + 0.02 * linear_depth;
+		// Half-size sample q was traced at full-size pixel 2q.
+		ivec2 base = pixel >> 1;
+		vec4 sum = vec4(0.0);
+		float total = 0.0;
+		vec4 best = vec4(0.0);
+		float best_weight = -1.0;
+		for (int y = -1; y <= 1; y++) {
+			for (int x = -1; x <= 1; x++) {
+				ivec2 q = base + ivec2(x, y);
+				if (any(lessThan(q, ivec2(0))) || any(greaterThanEqual(q, push.half_size))) {
+					continue;
+				}
+				float q_depth = texelFetch(source_guide_depth, q, 0).r;
+				if (q_depth == 0.0) {
+					continue;
+				}
+				vec4 q_nr = texelFetch(source_guide_normal, q, 0);
+				float same = exp(-abs(linearize(q_depth) - linear_depth) / tolerance);
+				same *= pow(max(0.0, dot(normal, normalize(q_nr.xyz * 2.0 - 1.0))), 16.0);
+				same *= 1.0 - abs(rw - roughness_weight(decode_roughness(q_nr.w)));
+				vec2 offset = vec2(q * 2 - pixel);
+				float w = same * exp(-0.5 * dot(offset, offset));
+				vec4 v = texelFetch(source_signal, q, 0);
+				sum += v * w;
+				total += w;
+				if (same > best_weight) {
+					best_weight = same;
+					best = v;
+				}
+			}
+		}
+		// No sample saw this surface (a thin feature between samples): take the most similar one.
+		result = total > 1e-4 ? sum / total : best;
+	}
+	imageStore(dest_signal, pixel, result);
+}
+
+#endif // MODE_UPSAMPLE && SIGNAL_COLOR

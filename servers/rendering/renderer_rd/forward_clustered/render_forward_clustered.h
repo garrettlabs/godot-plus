@@ -147,6 +147,7 @@ public:
 		Projection rt_reflections_prev_projection;
 		Transform3D rt_reflections_prev_cam_transform;
 		uint64_t rt_reflections_last_frame = UINT64_MAX;
+		bool rt_reflections_half_size = false; // Size the reflection textures were made for.
 
 		void ensure_specular();
 		bool has_specular() const { return render_buffers->has_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_SPECULAR); }
@@ -217,6 +218,20 @@ private:
 	LocalVector<RendererRD::RTReflections::Material> rt_reflection_materials;
 	HashMap<RID, uint32_t> rt_reflection_material_index;
 	HashMap<const void *, RendererRD::RTReflections::Instance> rt_reflection_surface_geometry;
+
+	// Material records kept across frames, valid while the material's version is unchanged. Records not used for a
+	// while are dropped; a freed material's RID is never handed out again, so its record cannot be picked up.
+	struct RTReflectionMaterialCache {
+		uint64_t version = 0;
+		uint64_t last_used = 0;
+		RendererRD::RTReflections::Material record;
+		RID albedo_texture; // Its average color multiplies the albedo once computed.
+		bool albedo_texture_srgb = false;
+		bool has_albedo = false; // Without an albedo uniform, a textured material reflects the texture's average alone.
+	};
+	HashMap<RID, RTReflectionMaterialCache> rt_reflection_material_cache;
+	uint64_t rt_reflection_material_cache_pruned = 0;
+	LocalVector<RID> rt_reflection_material_cache_stale;
 
 	/* Ray traced shadows */
 
@@ -745,7 +760,9 @@ private:
 
 	void _update_global_pipeline_data_requirements_from_project();
 	void _update_global_pipeline_data_requirements_from_light_storage();
-	RendererRD::RTReflections::Material _rt_reflection_material(RID p_material);
+	RendererRD::RTReflections::Material _rt_reflection_material(RID p_material, bool &r_has_albedo);
+	RendererRD::RTReflections::Material _rt_reflection_material_cached(RID p_material);
+	void _rt_reflection_prune_material_cache();
 	void _rt_reflection_instance(const GeometryInstanceForwardClustered *p_instance, const GeometryInstanceSurfaceDataCache *p_surface, bool p_deformed, RendererRD::RTReflections::Instance &r_record);
 	void _geometry_instance_add_surface_with_material(GeometryInstanceForwardClustered *ginstance, uint32_t p_surface, SceneShaderForwardClustered::MaterialData *p_material, uint32_t p_material_id, uint32_t p_shader_id, RID p_mesh);
 	void _geometry_instance_add_surface_with_material_chain(GeometryInstanceForwardClustered *ginstance, uint32_t p_surface, SceneShaderForwardClustered::MaterialData *p_material, RID p_mat_src, RID p_mesh);

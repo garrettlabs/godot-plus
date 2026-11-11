@@ -300,6 +300,7 @@ private:
 		HashMap<StringName, Variant> params;
 		int32_t priority = 0;
 		RID next_pass;
+		uint64_t version = 0; // Changes whenever the parameters, the shader or the next pass may have changed.
 		SelfList<Material> update_element;
 
 		Dependency dependency;
@@ -314,6 +315,7 @@ private:
 
 	SelfList<Material>::List material_update_list;
 	Mutex material_update_list_mutex;
+	SafeNumeric<uint64_t> material_version_counter;
 
 	static void _material_uniform_set_erased(void *p_material);
 
@@ -499,6 +501,14 @@ public:
 	virtual Variant material_get_param(RID p_material, const StringName &p_param) const override;
 	// The value the shader sees: the material's parameter if set, else the shader's default for that uniform.
 	Variant material_get_param_or_default(RID p_material, const StringName &p_param) const;
+	// Nonzero for a live material; changes whenever its parameters, shader or next pass may have changed, so data
+	// derived from them can be cached. Never repeats, also across freed and reused RIDs.
+	uint64_t material_get_version(RID p_material) const;
+	// The texture a material's base color most likely comes from: the `texture_albedo` uniform (the name
+	// BaseMaterial3D uses), else the first sampler2D uniform declared with `source_color`. The texture set on the
+	// material, else the shader's default for that uniform; invalid if neither. r_srgb is true when the uniform is
+	// declared with `source_color`.
+	RID material_get_albedo_texture(RID p_material, bool &r_srgb) const;
 
 	virtual void material_set_next_pass(RID p_material, RID p_next_material) override;
 	virtual void material_set_render_priority(RID p_material, int priority) override;

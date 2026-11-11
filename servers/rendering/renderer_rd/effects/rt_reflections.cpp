@@ -30,6 +30,7 @@
 
 #include "rt_reflections.h"
 
+#include "servers/rendering/renderer_compositor.h"
 #include "servers/rendering/renderer_rd/storage_rd/material_storage.h"
 #include "servers/rendering/renderer_rd/uniform_set_cache_rd.h"
 #include "servers/rendering/renderer_scene_render.h"
@@ -40,23 +41,165 @@ using namespace RendererRD;
 RTReflections::RTReflections() {
 	Vector<String> modes;
 	modes.push_back("");
+	modes.push_back("\n#define MODE_HALF_SIZE\n");
 	String defines = "\n#define MAX_DIRECTIONAL_LIGHT_DATA_STRUCTS " + itos(RendererSceneRender::MAX_DIRECTIONAL_LIGHTS) + "\n";
 	shader.initialize(modes, defines);
 	shader_version = shader.version_create();
 	pipeline = RD::get_singleton()->compute_pipeline_create(shader.version_get_shader(shader_version, 0));
+	pipeline_half = RD::get_singleton()->compute_pipeline_create(shader.version_get_shader(shader_version, 1));
 	params_buffer = RD::get_singleton()->uniform_buffer_create(sizeof(Params));
 	// Never empty, so the uniform set is always complete.
 	instances_capacity = 64;
 	instances_buffer = RD::get_singleton()->storage_buffer_create(instances_capacity * sizeof(Instance));
 	materials_capacity = 64;
 	materials_buffer = RD::get_singleton()->storage_buffer_create(materials_capacity * sizeof(Material));
+
+	Vector<String> average_modes;
+	average_modes.push_back("");
+	average_shader.initialize(average_modes);
+	average_shader_version = average_shader.version_create();
+	average_pipeline = RD::get_singleton()->compute_pipeline_create(average_shader.version_get_shader(average_shader_version, 0));
+	averages_capacity = 64;
+	averages_buffer = RD::get_singleton()->storage_buffer_create(averages_capacity * sizeof(float) * 4);
 }
 
 RTReflections::~RTReflections() {
+	RD::get_singleton()->free_rid(averages_buffer);
+	average_shader.version_free(average_shader_version);
 	RD::get_singleton()->free_rid(materials_buffer);
 	RD::get_singleton()->free_rid(instances_buffer);
 	RD::get_singleton()->free_rid(params_buffer);
 	shader.version_free(shader_version);
+}
+
+uint32_t RTReflections::get_texture_average(RID p_texture, RID p_rd_texture) {
+	if (p_texture.is_null() || p_rd_texture.is_null()) {
+		return NO_TEXTURE_AVERAGE;
+	}
+	const uint64_t frame = RSG::rasterizer->get_frame_number();
+	uint32_t slot;
+	const uint32_t *existing = texture_average_slots.getptr(p_texture);
+	if (existing) {
+		slot = *existing;
+	} else {
+		if (free_average_slots.size()) {
+			slot = free_average_slots[free_average_slots.size() - 1];
+			free_average_slots.resize(free_average_slots.size() - 1);
+		} else {
+			slot = average_slots.size();
+			average_slots.push_back(AverageSlot());
+		}
+		average_slots[slot] = AverageSlot();
+		average_slots[slot].texture = p_texture;
+		texture_average_slots.insert(p_texture, slot);
+	}
+	AverageSlot &s = average_slots[slot];
+	s.last_used = frame;
+	if (s.rd_texture != p_rd_texture) {
+		s.rd_texture = p_rd_texture;
+		s.ready = false;
+	}
+	if (!s.ready && !s.queued) {
+		s.queued = true;
+		average_queue.push_back(slot);
+	}
+	return s.ready ? slot : NO_TEXTURE_AVERAGE;
+}
+
+void RTReflections::_update_texture_averages() {
+	RD *rd = RD::get_singleton();
+	const uint64_t frame = RSG::rasterizer->get_frame_number();
+
+	// Free the slots of textures no material has asked for in a while (also those of freed textures).
+	const uint64_t prune_interval = 256;
+	if (frame >= averages_pruned + prune_interval) {
+		averages_pruned = frame;
+		for (uint32_t i = 0; i < average_slots.size(); i++) {
+			AverageSlot &s = average_slots[i];
+			if (s.texture.is_valid() && s.last_used + prune_interval < frame) {
+				texture_average_slots.erase(s.texture);
+				s = AverageSlot();
+				free_average_slots.push_back(i);
+			}
+		}
+	}
+
+	if (average_slots.size() > averages_capacity) {
+		const uint32_t capacity = Math::next_power_of_2(average_slots.size());
+		RID buffer = rd->storage_buffer_create(capacity * sizeof(float) * 4);
+		rd->buffer_copy(averages_buffer, buffer, 0, 0, averages_capacity * sizeof(float) * 4);
+		rd->free_rid(averages_buffer);
+		averages_buffer = buffer;
+		averages_capacity = capacity;
+	}
+
+	if (average_queue.is_empty()) {
+		return;
+	}
+
+	// A few textures per frame, so that loading a level does not stall a frame.
+	const uint32_t budget = 8;
+	uint32_t done = 0;
+	uint32_t taken = 0;
+	UniformSetCacheRD *uniform_set_cache = UniformSetCacheRD::get_singleton();
+	MaterialStorage *material_storage = MaterialStorage::get_singleton();
+	RID sampler = material_storage->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_LINEAR_WITH_MIPMAPS, RSE::CANVAS_ITEM_TEXTURE_REPEAT_ENABLED);
+	RID shader_rid = average_shader.version_get_shader(average_shader_version, 0);
+	RD::ComputeListID compute_list = 0;
+	bool started = false;
+	while (taken < average_queue.size() && done < budget) {
+		const uint32_t slot = average_queue[taken++];
+		AverageSlot &s = average_slots[slot];
+		if (!s.queued) {
+			continue; // Freed since it was queued.
+		}
+		s.queued = false;
+		if (!rd->texture_is_valid(s.rd_texture)) {
+			continue;
+		}
+		const RD::TextureFormat format = rd->texture_get_format(s.rd_texture);
+		if (format.texture_type != RD::TEXTURE_TYPE_2D) {
+			continue;
+		}
+		// The first mip whose larger side is below 256 texels: the 64x64 grid of bilinear taps covers a 128 texel mip
+		// exactly, and staying high in the chain keeps the mips (often averaged in sRGB space) from biasing the color.
+		const uint32_t largest = MAX(format.width, format.height);
+		float lod = 0.0;
+		if (largest >= 256) {
+			lod = Math::floor(Math::log2(float(largest) / 128.0f));
+		}
+		lod = CLAMP(lod, 0.0f, float(MAX(format.mipmaps, 1u) - 1));
+		if (!started) {
+			started = true;
+			compute_list = rd->compute_list_begin();
+			rd->compute_list_bind_compute_pipeline(compute_list, average_pipeline);
+		}
+		RD::Uniform u_texture(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 0, Vector<RID>({ sampler, s.rd_texture }));
+		RD::Uniform u_averages(RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, averages_buffer);
+		rd->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(shader_rid, 0, u_texture, u_averages), 0);
+		struct {
+			uint32_t slot;
+			float lod;
+			uint32_t pad[2];
+		} push = { slot, lod, { 0, 0 } };
+		rd->compute_list_set_push_constant(compute_list, &push, sizeof(push));
+		rd->compute_list_dispatch(compute_list, 1, 1, 1);
+		s.ready = true;
+		done++;
+	}
+	if (started) {
+		rd->compute_list_end();
+	}
+	// Drop what was taken; the rest waits for the next frames.
+	if (taken >= average_queue.size()) {
+		average_queue.clear();
+	} else {
+		LocalVector<uint32_t> rest;
+		for (uint32_t i = taken; i < average_queue.size(); i++) {
+			rest.push_back(average_queue[i]);
+		}
+		average_queue = rest;
+	}
 }
 
 void RTReflections::update_tables(const LocalVector<Instance> &p_instances, const LocalVector<Material> &p_materials) {
@@ -76,17 +219,34 @@ void RTReflections::update_tables(const LocalVector<Instance> &p_instances, cons
 	if (p_materials.size()) {
 		RD::get_singleton()->buffer_update(materials_buffer, 0, p_materials.size() * sizeof(Material), p_materials.ptr());
 	}
+	_update_texture_averages();
 }
 
 void RTReflections::process(Ref<RenderSceneBuffersRD> p_render_buffers, RTDenoiser::History &r_history, RID p_tlas, RID p_depth, RID p_normal_roughness, RID p_last_frame, RID p_destination, const Lights &p_lights, const Projection &p_projection, const Transform3D &p_cam_transform, const Projection &p_prev_projection, const Transform3D &p_prev_cam_transform, uint64_t p_frame, const Settings &p_settings) {
 	UniformSetCacheRD *uniform_set_cache = UniformSetCacheRD::get_singleton();
 	MaterialStorage *material_storage = MaterialStorage::get_singleton();
 
-	const Size2i size = p_render_buffers->get_internal_size();
+	const Size2i full_size = p_render_buffers->get_internal_size();
+	const bool half = p_settings.half_size;
+	const Size2i size = half ? Size2i((full_size.x + 1) / 2, (full_size.y + 1) / 2) : full_size;
 	const uint32_t usage = RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT;
 	const bool denoise = p_settings.denoise && p_settings.debug_view == 0;
-	RID raw = denoise ? p_render_buffers->create_texture(RB_SCOPE_RT_REFLECTIONS, SNAME("raw"), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage, RD::TEXTURE_SAMPLES_1, size, 1) : p_destination;
-	RID hit_distance = p_render_buffers->create_texture(RB_SCOPE_RT_REFLECTIONS, SNAME("hit_distance"), RD::DATA_FORMAT_R16_SFLOAT, usage, RD::TEXTURE_SAMPLES_1, size, 1);
+	RID raw;
+	RID hit_distance;
+	RID guide_depth;
+	RID guide_normal_roughness;
+	RID filtered; // What the upsample reads at half size.
+	if (half) {
+		// The caller clears the context when half_size changes, so these never coexist with the full-size ones.
+		raw = p_render_buffers->create_texture(RB_SCOPE_RT_REFLECTIONS, SNAME("raw_half"), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage, RD::TEXTURE_SAMPLES_1, size, 1);
+		hit_distance = p_render_buffers->create_texture(RB_SCOPE_RT_REFLECTIONS, SNAME("hit_distance_half"), RD::DATA_FORMAT_R16_SFLOAT, usage, RD::TEXTURE_SAMPLES_1, size, 1);
+		guide_depth = p_render_buffers->create_texture(RB_SCOPE_RT_REFLECTIONS, SNAME("guide_depth_half"), RD::DATA_FORMAT_R32_SFLOAT, usage, RD::TEXTURE_SAMPLES_1, size, 1);
+		guide_normal_roughness = p_render_buffers->create_texture(RB_SCOPE_RT_REFLECTIONS, SNAME("guide_normal_roughness_half"), RD::DATA_FORMAT_R8G8B8A8_UNORM, usage, RD::TEXTURE_SAMPLES_1, size, 1);
+		filtered = denoise ? p_render_buffers->create_texture(RB_SCOPE_RT_REFLECTIONS, SNAME("filtered_half"), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage, RD::TEXTURE_SAMPLES_1, size, 1) : raw;
+	} else {
+		raw = denoise ? p_render_buffers->create_texture(RB_SCOPE_RT_REFLECTIONS, SNAME("raw"), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage, RD::TEXTURE_SAMPLES_1, size, 1) : p_destination;
+		hit_distance = p_render_buffers->create_texture(RB_SCOPE_RT_REFLECTIONS, SNAME("hit_distance"), RD::DATA_FORMAT_R16_SFLOAT, usage, RD::TEXTURE_SAMPLES_1, size, 1);
+	}
 
 	Projection correction;
 	correction.set_depth_correction(true);
@@ -107,8 +267,8 @@ void RTReflections::process(Ref<RenderSceneBuffersRD> p_render_buffers, RTDenois
 	params.ambient[0] = p_settings.ambient.r;
 	params.ambient[1] = p_settings.ambient.g;
 	params.ambient[2] = p_settings.ambient.b;
-	params.screen_size[0] = size.x;
-	params.screen_size[1] = size.y;
+	params.screen_size[0] = full_size.x;
+	params.screen_size[1] = full_size.y;
 	params.frame = uint32_t(p_frame);
 	params.instance_mask = p_settings.instance_mask;
 	params.omni_count = p_lights.omni_buffer.is_valid() ? p_lights.omni_count : 0;
@@ -121,11 +281,13 @@ void RTReflections::process(Ref<RenderSceneBuffersRD> p_render_buffers, RTDenois
 	params.debug_view = p_settings.debug_view;
 	params.screen_reuse = p_settings.screen_reuse ? 1 : 0;
 	params.view_consistent = p_settings.view_consistent_hits ? 1 : 0;
+	params.trace_size[0] = size.x;
+	params.trace_size[1] = size.y;
 	RD::get_singleton()->buffer_update(params_buffer, 0, sizeof(Params), &params);
 
 	RID nearest = material_storage->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_NEAREST, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED);
 	RID linear = material_storage->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_LINEAR, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED);
-	RID compute_shader = shader.version_get_shader(shader_version, 0);
+	RID compute_shader = shader.version_get_shader(shader_version, half ? 1 : 0);
 
 	// Lights without data this frame bind a table that is never read (their count is zero).
 	RID omni = p_lights.omni_buffer.is_valid() ? p_lights.omni_buffer : instances_buffer;
@@ -143,10 +305,18 @@ void RTReflections::process(Ref<RenderSceneBuffersRD> p_render_buffers, RTDenois
 	RD::Uniform u_dest(RD::UNIFORM_TYPE_IMAGE, 9, raw);
 	RD::Uniform u_hit(RD::UNIFORM_TYPE_IMAGE, 10, hit_distance);
 	RD::Uniform u_params(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 11, params_buffer);
+	RD::Uniform u_averages(RD::UNIFORM_TYPE_STORAGE_BUFFER, 12, averages_buffer);
 
 	RD::ComputeListID compute_list = RD::get_singleton()->compute_list_begin();
-	RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, pipeline);
-	RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(compute_shader, 0, u_depth, u_normal, u_tlas, u_instances, u_materials, u_omni, u_spot, u_directional, u_last_frame, u_dest, u_hit, u_params), 0);
+	if (half) {
+		RD::Uniform u_guide_depth(RD::UNIFORM_TYPE_IMAGE, 13, guide_depth);
+		RD::Uniform u_guide_normal(RD::UNIFORM_TYPE_IMAGE, 14, guide_normal_roughness);
+		RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, pipeline_half);
+		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(compute_shader, 0, u_depth, u_normal, u_tlas, u_instances, u_materials, u_omni, u_spot, u_directional, u_last_frame, u_dest, u_hit, u_params, u_averages, u_guide_depth, u_guide_normal), 0);
+	} else {
+		RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, pipeline);
+		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(compute_shader, 0, u_depth, u_normal, u_tlas, u_instances, u_materials, u_omni, u_spot, u_directional, u_last_frame, u_dest, u_hit, u_params, u_averages), 0);
+	}
 	RD::get_singleton()->compute_list_dispatch_threads(compute_list, size.x, size.y, 1);
 	RD::get_singleton()->compute_list_end();
 
@@ -156,10 +326,21 @@ void RTReflections::process(Ref<RenderSceneBuffersRD> p_render_buffers, RTDenois
 		RTDenoiser::Settings denoise_settings;
 		denoise_settings.max_history = 16.0;
 		denoise_settings.max_history_dynamic = 4.0;
-		denoiser.denoise_color(p_render_buffers, RB_SCOPE_RT_REFLECTIONS_DENOISE, r_history, raw, p_destination, p_depth, p_normal_roughness, p_projection, p_cam_transform, p_frame, denoise_settings);
+		if (half) {
+			denoiser.denoise_color(p_render_buffers, RB_SCOPE_RT_REFLECTIONS_DENOISE, r_history, raw, hit_distance, filtered, guide_depth, guide_normal_roughness, size, p_projection, p_cam_transform, p_frame, denoise_settings);
+		} else {
+			denoiser.denoise_color(p_render_buffers, RB_SCOPE_RT_REFLECTIONS_DENOISE, r_history, raw, hit_distance, p_destination, p_depth, p_normal_roughness, size, p_projection, p_cam_transform, p_frame, denoise_settings);
+		}
 		RD::get_singleton()->draw_command_end_label();
 	} else {
 		p_render_buffers->clear_context(RB_SCOPE_RT_REFLECTIONS_DENOISE);
 		r_history = RTDenoiser::History();
+	}
+
+	if (half) {
+		RENDER_TIMESTAMP("Upsample Ray Traced Reflections");
+		RD::get_singleton()->draw_command_begin_label("Upsample Ray Traced Reflections");
+		denoiser.upsample_color(p_render_buffers, filtered, guide_depth, guide_normal_roughness, p_destination, p_depth, p_normal_roughness, p_projection);
+		RD::get_singleton()->draw_command_end_label();
 	}
 }

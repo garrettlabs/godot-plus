@@ -140,6 +140,7 @@ void RenderForwardClustered::RenderBufferDataForwardClustered::free_data() {
 	rt_reflections_active = false;
 	rt_reflections_history = RendererRD::RTDenoiser::History();
 	rt_reflections_last_frame = UINT64_MAX;
+	rt_reflections_half_size = false;
 
 	if (cluster_builder) {
 		memdelete(cluster_builder);
@@ -1999,7 +2000,7 @@ void RenderForwardClustered::_render_3d_upscaling(const RenderDataRD *p_render_d
 	}
 }
 
-RendererRD::RTReflections::Material RenderForwardClustered::_rt_reflection_material(RID p_material) {
+RendererRD::RTReflections::Material RenderForwardClustered::_rt_reflection_material(RID p_material, bool &r_has_albedo) {
 	RendererRD::MaterialStorage *material_storage = RendererRD::MaterialStorage::get_singleton();
 	// Read by uniform name, the names BaseMaterial3D uses; a custom shader that uses the same names is reflected the
 	// same way. Missing names take the defaults below. Colors are read as sRGB, as source_color uniforms are.
@@ -2008,6 +2009,7 @@ RendererRD::RTReflections::Material RenderForwardClustered::_rt_reflection_mater
 	float emission_energy = 1.0;
 	float roughness = 1.0;
 	float metallic = 0.0;
+	r_has_albedo = false;
 	if (p_material.is_valid()) {
 		auto get = [&](const StringName &p_name) -> Variant {
 			return material_storage->material_get_param_or_default(p_material, p_name);
@@ -2039,7 +2041,9 @@ RendererRD::RTReflections::Material RenderForwardClustered::_rt_reflection_mater
 		static const StringName emission_energy_name = "emission_energy";
 		static const StringName roughness_name = "roughness";
 		static const StringName metallic_name = "metallic";
-		to_color(get(albedo_name), albedo);
+		const Variant albedo_value = get(albedo_name);
+		r_has_albedo = albedo_value.get_type() == Variant::COLOR || albedo_value.get_type() == Variant::VECTOR3 || albedo_value.get_type() == Variant::VECTOR4;
+		to_color(albedo_value, albedo);
 		to_color(get(emission_name), emission);
 		to_float(get(emission_energy_name), emission_energy);
 		to_float(get(roughness_name), roughness);
@@ -2113,7 +2117,57 @@ void RenderForwardClustered::_rt_reflection_instance(const GeometryInstanceForwa
 	} else {
 		r_record.material = rt_reflection_materials.size();
 		rt_reflection_material_index.insert(material, r_record.material);
-		rt_reflection_materials.push_back(_rt_reflection_material(material));
+		rt_reflection_materials.push_back(_rt_reflection_material_cached(material));
+	}
+}
+
+RendererRD::RTReflections::Material RenderForwardClustered::_rt_reflection_material_cached(RID p_material) {
+	RendererRD::MaterialStorage *material_storage = RendererRD::MaterialStorage::get_singleton();
+	const uint64_t version = material_storage->material_get_version(p_material);
+	RTReflectionMaterialCache *entry = rt_reflection_material_cache.getptr(p_material);
+	if (entry == nullptr || entry->version != version) {
+		if (entry == nullptr) {
+			entry = &rt_reflection_material_cache.insert(p_material, RTReflectionMaterialCache())->value;
+		}
+		entry->version = version;
+		entry->record = _rt_reflection_material(p_material, entry->has_albedo);
+		entry->albedo_texture = material_storage->material_get_albedo_texture(p_material, entry->albedo_texture_srgb);
+	}
+	entry->last_used = RSG::rasterizer->get_frame_number();
+
+	// The albedo texture's average color, once computed (render targets are skipped: their content changes).
+	RendererRD::RTReflections::Material record = entry->record;
+	if (entry->albedo_texture.is_valid()) {
+		RID rd_texture = RendererRD::TextureStorage::get_singleton()->texture_get_rd_texture_2d_static(entry->albedo_texture, entry->albedo_texture_srgb);
+		const uint32_t slot = rt_reflections->get_texture_average(entry->albedo_texture, rd_texture);
+		if (slot != RendererRD::RTReflections::NO_TEXTURE_AVERAGE) {
+			record.albedo_average = slot;
+			if (!entry->has_albedo) {
+				record.albedo_metallic[0] = 1.0;
+				record.albedo_metallic[1] = 1.0;
+				record.albedo_metallic[2] = 1.0;
+			}
+		}
+	}
+	return record;
+}
+
+void RenderForwardClustered::_rt_reflection_prune_material_cache() {
+	// Every few seconds, drop the records of materials no view has used for as long.
+	const uint64_t frame = RSG::rasterizer->get_frame_number();
+	const uint64_t interval = 256;
+	if (frame < rt_reflection_material_cache_pruned + interval) {
+		return;
+	}
+	rt_reflection_material_cache_pruned = frame;
+	rt_reflection_material_cache_stale.clear();
+	for (const KeyValue<RID, RTReflectionMaterialCache> &E : rt_reflection_material_cache) {
+		if (E.value.last_used + interval < frame) {
+			rt_reflection_material_cache_stale.push_back(E.key);
+		}
+	}
+	for (const RID &rid : rt_reflection_material_cache_stale) {
+		rt_reflection_material_cache.erase(rid);
 	}
 }
 
@@ -2273,9 +2327,10 @@ void RenderForwardClustered::_update_raytracing_scene(const RenderDataRD *p_rend
 
 	if (p_reflection_tables) {
 		if (rt_reflection_materials.is_empty()) {
-			rt_reflection_materials.push_back(_rt_reflection_material(RID()));
+			rt_reflection_materials.push_back(_rt_reflection_material_cached(RID()));
 		}
 		rt_reflections->update_tables(rt_reflection_instances, rt_reflection_materials);
+		_rt_reflection_prune_material_cache();
 	}
 
 	if (r_render_info) {
@@ -2364,6 +2419,15 @@ void RenderForwardClustered::_process_rt_reflections(const RenderDataRD *p_rende
 		rb->clear_context(RB_SCOPE_SSR);
 	}
 	ss_effects->allocate_last_frame_buffer(rb, environment_get_ssil_enabled(environment), true);
+	const bool half_size = GLOBAL_GET_CACHED(bool, "rendering/raytracing/reflections/half_size");
+	if (half_size != p_rb_data->rt_reflections_half_size) {
+		// Switching between full and half size: start over with textures and history of the new size.
+		rb->clear_context(RB_SCOPE_RT_REFLECTIONS);
+		rb->clear_context(RB_SCOPE_RT_REFLECTIONS_DENOISE);
+		p_rb_data->rt_reflections_history = RendererRD::RTDenoiser::History();
+		p_rb_data->rt_reflections_last_frame = UINT64_MAX;
+		p_rb_data->rt_reflections_half_size = half_size;
+	}
 	RID destination = rb->create_texture(RB_SCOPE_RT_REFLECTIONS, SNAME("final"), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT, RD::TEXTURE_SAMPLES_1, rb->get_internal_size(), 1);
 	RID last_frame = rb->get_texture_slice(RB_SCOPE_SSLF, RB_LAST_FRAME, 0, 0);
 
@@ -2380,6 +2444,7 @@ void RenderForwardClustered::_process_rt_reflections(const RenderDataRD *p_rende
 	settings.emission_scale = p_render_data->scene_data->emissive_exposure_normalization > 0.0f ? p_render_data->scene_data->emissive_exposure_normalization : 1.0f;
 	settings.view_consistent_hits = GLOBAL_GET_CACHED(bool, "rendering/raytracing/scene/view_consistent_hits");
 	settings.taa_jitter = p_render_data->scene_data->taa_jitter;
+	settings.half_size = half_size;
 
 	// Ambient light at table-shaded hits, as the scene data computes it for the forward pass (sky ambient is not
 	// sampled: its ambient color stands in).
