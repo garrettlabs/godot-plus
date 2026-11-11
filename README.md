@@ -2,9 +2,10 @@
 
 **godot-plus is Godot 4.8 with a set of rendering and physics additions that upstream
 does not have**: DLSS through NVIDIA Streamline, screen-space contact shadows for omni and
-spot lights, static shadow caching, ray tracing (acceleration structures and ray-traced
-omni and spot shadows, on Vulkan and D3D12), a PhysX 5 physics backend with GPU dynamics, Blast
-destruction and Flow gas, and profiling zones for Tracy.
+spot lights, static shadow caching, ray tracing (acceleration structures, ray-traced omni and
+spot shadows, ray-traced ambient occlusion and reflections, on Vulkan and D3D12), a PhysX 5
+physics backend with GPU dynamics, Blast destruction and Flow gas, a Windows export option that
+keeps the runtime libraries in a subfolder, and profiling zones for Tracy.
 `main` tracks upstream master; every addition is kept as its own merged topic branch so the
 set rebases onto new upstream releases. The patches are maintained here and are not
 submitted upstream.
@@ -19,7 +20,8 @@ Upstream's own README follows below under *Godot Engine*.
 | **Screen-space contact shadows for omni and spot lights** | `renderer_rd/effects/ss_effects.*`, `light_storage.*`, `scene_forward_lights_inc.glsl` | Upstream traces them for directional lights only. `rendering/lights_and_shadows/contact_shadow/max_positional_lights` (default 4) caps the per-frame passes; the nearest lights that allow them get a layer. |
 | **PhysX 5.10 physics backend** (`physics/3d/physics_engine = "PhysX"`) with GPU rigid-body dynamics, vehicles, cloth, fluids, water, Flow gas, Blast destruction and a traced GI | `modules/godot_physx/` | Wild Ox Studios' module from [uno1982/godot](https://github.com/uno1982/godot), imported verbatim and ported to 4.8. The PhysX SDK is built out of tree (see Building). Jolt remains the default physics engine; GPU dynamics (`physics/physx_3d/simulation/gpu_dynamics`) pays off with thousands of dynamic bodies and costs a little otherwise. Flow and Blast are built in since `ed658b07a8` (releases from v1.0.0 on). |
 | **Static shadow caching** for omni and spot lights: `GeometryInstance3D.static_shadow_caster` marks geometry that never moves and a light then redraws only moving casters over a cached depth of the static ones | `renderer_scene_cull.*`, `renderer_rd/storage_rd/light_storage.*`, `forward_clustered/render_forward_clustered.*` | Forward+, spot and dual-paraboloid omni lights; `rendering/lights_and_shadows/positional_shadow/static_shadow_cache` switches it off. |
-| **Ray tracing** in Forward+ (Vulkan and D3D12): acceleration structures for the scene and ray-traced shadows for omni and spot lights, in place of their shadow maps | `renderer_rd/` ray-query passes, `RenderingDevice.blas_update()`, `rendering/raytracing/*` | Off by default (`rendering/raytracing/enabled`, restart required); needs a GPU with ray queries. On D3D12 it needs DXR 1.1, shader model 6.5 and a build against the ray-tracing NIR library (see Building); GPUs or builds without ray-query support keep shadow maps. D3D12 driver support derives from [godotengine/godot#118654](https://github.com/godotengine/godot/pull/118654) by Skyth. Limits: at most 6 traced lights per pixel, light caster and cull masks are not applied, geometry displaced in a vertex shader casts its unmodified shape, and transparent surfaces receive no traced shadows. |
+| **Ray tracing** in Forward+ (Vulkan and D3D12): acceleration structures for the scene, ray-traced shadows for omni and spot lights (and for volumetric fog) in place of their shadow maps, ray-traced ambient occlusion in place of SSAO and ray-traced reflections in place of SSR | `renderer_rd/` ray-query passes (`effects/rt_shadows.*`, `rt_ao.*`, `rt_reflections.*`, `rt_denoiser.*`), `RenderingDevice.blas_update()`, `rendering/raytracing/*` | Off by default (`rendering/raytracing/enabled`, restart required); needs a GPU with ray queries. On D3D12 it needs DXR 1.1, shader model 6.5 and a build against the ray-tracing NIR library (see Building); GPUs or builds without ray-query support keep shadow maps, SSAO and SSR. D3D12 driver support derives from [godotengine/godot#118654](https://github.com/godotengine/godot/pull/118654) by Skyth. Traced ambient occlusion and reflections replace SSAO and SSR where an environment enables them (`rendering/raytracing/ambient_occlusion/*`, `rendering/raytracing/reflections/*`, each with its own denoiser), and skip hits the camera sees past, so geometry that a material moves or discards for the camera only is handled as drawn (`rendering/raytracing/scene/view_consistent_hits`). Limits: at most 6 traced lights per pixel, light caster and cull masks are not applied, geometry displaced in a vertex shader casts its unmodified traced shadow (and occludes and is reflected at that shape where it is off screen), transparent surfaces receive no traced shadows, and a reflected point that is not on screen is shaded from its material's uniforms without textures. |
+| **Windows export: runtime libraries in a subfolder** | `platform/windows/export/`, `core/os/os.*` (`get_runtime_library_dir()`, `load_runtime_library()`), the D3D12, Streamline, PhysX and GDExtension loaders | The export option `application/library_subfolder` (empty by default) names one folder beside the executable; the export puts the Agility SDK, the Streamline DLLs, GDExtension libraries and their dependencies and the PhysX module's PhysX GPU, Blast and Flow DLLs there, and the engine loads them from it. Blast is delay-loaded on MSVC and clang-cl builds, so a missing Blast DLL logs an error instead of stopping the executable. The exporter copies these libraries from next to the export template; the release zip places them there. |
 | **Profiling zones** for animation, skeletons, scene tree and the 3D render path | `scene/animation`, `scene/3d`, `scene/main`, `servers/rendering` | Active in `profiler=tracy` builds only. A Tracy capture can then attribute a frame to shadow culling, draw submission, animation and script instead of one opaque zone. |
 
 Everything else is upstream Godot 4.8-beta at the commit `master` points to.
@@ -32,6 +34,7 @@ Bugs that also exist in upstream Godot and are fixed on `main` (numbers are issu
 - MultiMesh physics interpolation updated buffers off the render thread with `thread_model=2` (#16).
 - Freeing an instance with surface material overrides before its first draw logged four `Parameter "material" is null` errors (#19, godotengine/godot#85817).
 - A navigation map whose async iterations were switched off while a build was in flight never collected that build and stopped syncing (#11).
+- An omni or spot light with a `light_projector` whose shadow was disabled from its first frame projected nothing, because the projector matrix was only built for lights that render a shadow map (#23; the same fault made ray traced lights project nothing).
 
 ## Branches
 
@@ -39,8 +42,8 @@ Bugs that also exist in upstream Godot and are fixed on `main` (numbers are issu
 |---|---|
 | `main` | The engine. Upstream `master` plus every patch, merged `--no-ff`; builds and releases come from here. Upstream is pulled in at chosen commits, not continuously, so a build of `main` is reproducible. |
 | `master` | Mirror of `godotengine/godot` master. Never patched. |
-| `streamline-dlss`, `contact-shadows-positional`, `physx5-module`, `profiling-zones`, `plus-versioning`, `static-shadow-cache`, `rt-acceleration-structures`, `rt-shadows`, `d3d12-raytracing` | One patch each, cut from `master` and merged into `main` once they build and pass testing. |
-| `nav-async-sync`, `render-thread-shutdown`, `dlss-frame-token`, `fix/flow-colliders-in-physics-step`, `multimesh-interpolation-thread`, `instance-free-material-order`, `rt-off-cost`, `rt-fog-shadows`, `sdfgi-rt-binding`, `shader-baker-ray-query`, `d3d12-baker-ray-query`, `d3d12-shader-cache-version` | Fix branches, merged into `main` the same way. A fix is cut from the branch it fixes when the code only exists there (`dlss-frame-token` from `streamline-dlss`, `rt-off-cost` from `rt-shadows`, `d3d12-baker-ray-query` from `main`), otherwise from `master`. |
+| `streamline-dlss`, `contact-shadows-positional`, `physx5-module`, `profiling-zones`, `plus-versioning`, `static-shadow-cache`, `rt-acceleration-structures`, `rt-shadows`, `d3d12-raytracing`, `rt-ambient-occlusion`, `rt-reflections`, `rt-view-consistent-hits`, `windows-library-subfolder` | One patch each, merged into `main` once they build and pass testing. Cut from `master` when they stand alone; the later ray tracing branches and `windows-library-subfolder` build on earlier patches and are cut from the branch or the `main` commit they extend. |
+| `nav-async-sync`, `render-thread-shutdown`, `dlss-frame-token`, `fix/flow-colliders-in-physics-step`, `multimesh-interpolation-thread`, `instance-free-material-order`, `rt-off-cost`, `rt-fog-shadows`, `sdfgi-rt-binding`, `shader-baker-ray-query`, `d3d12-baker-ray-query`, `d3d12-shader-cache-version`, `fix-light-projector-matrix` | Fix branches, merged into `main` the same way. A fix is cut from the branch it fixes when the code only exists there (`dlss-frame-token` from `streamline-dlss`, `rt-off-cost` from `rt-shadows`, `d3d12-baker-ray-query` from `main`), otherwise from `master`. |
 
 ## Building (Windows)
 
@@ -65,7 +68,7 @@ from `misc/scripts/install_d3d12_sdk_windows.py`, AccessKit from
   (`bin/x64/`), copied next to the built binary. The headers are in `thirdparty/streamline`.
 - **Ray-tracing NIR library** (optional, for ray tracing on D3D12): download
   `godot-nir-static-x86_64-msvc-release.zip` from this repository's
-  [v1.3.0 release assets](https://github.com/garrettlabs/godot-plus/releases/tag/v1.3.0),
+  [release assets](https://github.com/garrettlabs/godot-plus/releases) (attached to v1.3.0 and later),
   extract it to a folder named `mesa-x86_64-msvc` (so that
   `<dir>/mesa-x86_64-msvc/bin/libNIR.windows.x86_64.lib` exists) and add `mesa_libs=<dir>/mesa`
   to every scons line below. It is a build of
@@ -115,7 +118,9 @@ export templates, all from one commit, packaged as a zip on GitHub Releases.
 - **Release tag:** `vMAJOR.MINOR.PATCH` on `main`. The changelog names the upstream base
   commit of each release.
 - **Package name:** `godot-plus-<tag>-win64.zip`, with a README.txt listing its files and
-  how to install the templates.
+  how to install the templates. From v1.4.0 the `templates/` folder also carries the runtime
+  DLLs (the Agility SDK pair under the `D3D12Core.x86_64.dll` / `d3d12SDKLayers.x86_64.dll`
+  names the exporter looks for), so Windows exports made with the installed templates ship them.
 - **Changelog:** `CHANGELOG-plus.md` lists, per release, the upstream base commit and the
   patches merged since the previous release.
 
