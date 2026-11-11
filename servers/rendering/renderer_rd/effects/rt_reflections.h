@@ -33,6 +33,7 @@
 #include "core/math/projection.h"
 #include "servers/rendering/renderer_rd/effects/rt_denoiser.h"
 #include "servers/rendering/renderer_rd/shaders/effects/rt_reflections.glsl.gen.h"
+#include "servers/rendering/renderer_rd/shaders/effects/rt_texture_average.glsl.gen.h"
 #include "servers/rendering/renderer_rd/storage_rd/render_scene_buffers_rd.h"
 #include "servers/rendering/rendering_device.h"
 
@@ -63,11 +64,15 @@ public:
 		INSTANCE_FLAG_GEOMETRY = 4, // The addresses are valid.
 	};
 
+	static constexpr uint32_t NO_TEXTURE_AVERAGE = 0xFFFFFFFF;
+
 	struct Material {
 		float albedo_metallic[4]; // Linear albedo, metallic.
 		float emission_roughness[4]; // Linear emission times energy, roughness.
+		uint32_t albedo_average = NO_TEXTURE_AVERAGE; // Slot of the albedo texture's average color, multiplied in.
+		uint32_t pad[3] = {};
 	};
-	static_assert(sizeof(Material) == 32);
+	static_assert(sizeof(Material) == 48);
 
 	struct Lights {
 		RID omni_buffer;
@@ -129,11 +134,39 @@ private:
 
 	RTDenoiser denoiser;
 
+	// Average colors of albedo textures, one slot per texture, computed a few per frame.
+	struct AverageSlot {
+		RID texture;
+		RID rd_texture; // The view the average was (or will be) computed from.
+		uint64_t last_used = 0;
+		bool ready = false;
+		bool queued = false;
+	};
+	RtTextureAverageShaderRD average_shader;
+	RID average_shader_version;
+	RID average_pipeline;
+	RID averages_buffer;
+	uint32_t averages_capacity = 0;
+	LocalVector<AverageSlot> average_slots;
+	LocalVector<uint32_t> free_average_slots;
+	LocalVector<uint32_t> average_queue;
+	HashMap<RID, uint32_t> texture_average_slots;
+	uint64_t averages_pruned = 0;
+
+	void _update_texture_averages();
+
 public:
 	RTReflections();
 	~RTReflections();
 
-	// Uploads this frame's instance and material records (shared by every view drawn this frame).
+	// The slot of p_texture's average color (linear RGB) once it is computed, NO_TEXTURE_AVERAGE until then; the
+	// first call queues it. p_rd_texture is the view to average; when it differs from the last call (the texture's
+	// data was replaced), the average is computed again. A texture whose content is rewritten in place keeps its
+	// first average. Slots not asked for in a while are freed.
+	uint32_t get_texture_average(RID p_texture, RID p_rd_texture);
+
+	// Uploads this frame's instance and material records (shared by every view drawn this frame) and computes queued
+	// texture averages.
 	void update_tables(const LocalVector<Instance> &p_instances, const LocalVector<Material> &p_materials);
 
 	// Traces and denoises into p_destination (RGBA16F, storage, the internal size). p_prev_projection and

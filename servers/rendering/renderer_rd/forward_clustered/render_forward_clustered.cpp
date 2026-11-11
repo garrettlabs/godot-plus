@@ -1999,7 +1999,7 @@ void RenderForwardClustered::_render_3d_upscaling(const RenderDataRD *p_render_d
 	}
 }
 
-RendererRD::RTReflections::Material RenderForwardClustered::_rt_reflection_material(RID p_material) {
+RendererRD::RTReflections::Material RenderForwardClustered::_rt_reflection_material(RID p_material, bool &r_has_albedo) {
 	RendererRD::MaterialStorage *material_storage = RendererRD::MaterialStorage::get_singleton();
 	// Read by uniform name, the names BaseMaterial3D uses; a custom shader that uses the same names is reflected the
 	// same way. Missing names take the defaults below. Colors are read as sRGB, as source_color uniforms are.
@@ -2008,6 +2008,7 @@ RendererRD::RTReflections::Material RenderForwardClustered::_rt_reflection_mater
 	float emission_energy = 1.0;
 	float roughness = 1.0;
 	float metallic = 0.0;
+	r_has_albedo = false;
 	if (p_material.is_valid()) {
 		auto get = [&](const StringName &p_name) -> Variant {
 			return material_storage->material_get_param_or_default(p_material, p_name);
@@ -2039,7 +2040,9 @@ RendererRD::RTReflections::Material RenderForwardClustered::_rt_reflection_mater
 		static const StringName emission_energy_name = "emission_energy";
 		static const StringName roughness_name = "roughness";
 		static const StringName metallic_name = "metallic";
-		to_color(get(albedo_name), albedo);
+		const Variant albedo_value = get(albedo_name);
+		r_has_albedo = albedo_value.get_type() == Variant::COLOR || albedo_value.get_type() == Variant::VECTOR3 || albedo_value.get_type() == Variant::VECTOR4;
+		to_color(albedo_value, albedo);
 		to_color(get(emission_name), emission);
 		to_float(get(emission_energy_name), emission_energy);
 		to_float(get(roughness_name), roughness);
@@ -2117,19 +2120,35 @@ void RenderForwardClustered::_rt_reflection_instance(const GeometryInstanceForwa
 	}
 }
 
-const RendererRD::RTReflections::Material &RenderForwardClustered::_rt_reflection_material_cached(RID p_material) {
-	const uint64_t version = RendererRD::MaterialStorage::get_singleton()->material_get_version(p_material);
+RendererRD::RTReflections::Material RenderForwardClustered::_rt_reflection_material_cached(RID p_material) {
+	RendererRD::MaterialStorage *material_storage = RendererRD::MaterialStorage::get_singleton();
+	const uint64_t version = material_storage->material_get_version(p_material);
 	RTReflectionMaterialCache *entry = rt_reflection_material_cache.getptr(p_material);
-	if (entry == nullptr) {
-		entry = &rt_reflection_material_cache.insert(p_material, RTReflectionMaterialCache())->value;
+	if (entry == nullptr || entry->version != version) {
+		if (entry == nullptr) {
+			entry = &rt_reflection_material_cache.insert(p_material, RTReflectionMaterialCache())->value;
+		}
 		entry->version = version;
-		entry->record = _rt_reflection_material(p_material);
-	} else if (entry->version != version) {
-		entry->version = version;
-		entry->record = _rt_reflection_material(p_material);
+		entry->record = _rt_reflection_material(p_material, entry->has_albedo);
+		entry->albedo_texture = material_storage->material_get_albedo_texture(p_material, entry->albedo_texture_srgb);
 	}
 	entry->last_used = RSG::rasterizer->get_frame_number();
-	return entry->record;
+
+	// The albedo texture's average color, once computed (render targets are skipped: their content changes).
+	RendererRD::RTReflections::Material record = entry->record;
+	if (entry->albedo_texture.is_valid()) {
+		RID rd_texture = RendererRD::TextureStorage::get_singleton()->texture_get_rd_texture_2d_static(entry->albedo_texture, entry->albedo_texture_srgb);
+		const uint32_t slot = rt_reflections->get_texture_average(entry->albedo_texture, rd_texture);
+		if (slot != RendererRD::RTReflections::NO_TEXTURE_AVERAGE) {
+			record.albedo_average = slot;
+			if (!entry->has_albedo) {
+				record.albedo_metallic[0] = 1.0;
+				record.albedo_metallic[1] = 1.0;
+				record.albedo_metallic[2] = 1.0;
+			}
+		}
+	}
+	return record;
 }
 
 void RenderForwardClustered::_rt_reflection_prune_material_cache() {

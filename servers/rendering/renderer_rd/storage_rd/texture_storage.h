@@ -647,6 +647,9 @@ public:
 	virtual void texture_rd_initialize(RID p_texture, const RID &p_rd_texture, const RSE::TextureLayeredType p_layer_type = RSE::TEXTURE_LAYERED_2D_ARRAY) override;
 
 	virtual RID texture_get_rd_texture(RID p_texture, bool p_srgb = false) const override;
+	// texture_get_rd_texture() for a 2D texture that is not a render target (whose content changes every frame);
+	// invalid for render targets, layered and 3D textures.
+	RID texture_get_rd_texture_2d_static(RID p_texture, bool p_srgb) const;
 	virtual uint64_t texture_get_native_handle(RID p_texture, bool p_srgb = false) const override;
 
 	//internal usage

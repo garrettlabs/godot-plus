@@ -224,6 +224,9 @@ private:
 		uint64_t version = 0;
 		uint64_t last_used = 0;
 		RendererRD::RTReflections::Material record;
+		RID albedo_texture; // Its average color multiplies the albedo once computed.
+		bool albedo_texture_srgb = false;
+		bool has_albedo = false; // Without an albedo uniform, a textured material reflects the texture's average alone.
 	};
 	HashMap<RID, RTReflectionMaterialCache> rt_reflection_material_cache;
 	uint64_t rt_reflection_material_cache_pruned = 0;
@@ -756,8 +759,8 @@ private:
 
 	void _update_global_pipeline_data_requirements_from_project();
 	void _update_global_pipeline_data_requirements_from_light_storage();
-	RendererRD::RTReflections::Material _rt_reflection_material(RID p_material);
-	const RendererRD::RTReflections::Material &_rt_reflection_material_cached(RID p_material);
+	RendererRD::RTReflections::Material _rt_reflection_material(RID p_material, bool &r_has_albedo);
+	RendererRD::RTReflections::Material _rt_reflection_material_cached(RID p_material);
 	void _rt_reflection_prune_material_cache();
 	void _rt_reflection_instance(const GeometryInstanceForwardClustered *p_instance, const GeometryInstanceSurfaceDataCache *p_surface, bool p_deformed, RendererRD::RTReflections::Instance &r_record);
 	void _geometry_instance_add_surface_with_material(GeometryInstanceForwardClustered *ginstance, uint32_t p_surface, SceneShaderForwardClustered::MaterialData *p_material, uint32_t p_material_id, uint32_t p_shader_id, RID p_mesh);

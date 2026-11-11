@@ -2348,6 +2348,14 @@ RID TextureStorage::texture_get_rd_texture(RID p_texture, bool p_srgb) const {
 	return (p_srgb && tex->rd_texture_srgb.is_valid()) ? tex->rd_texture_srgb : tex->rd_texture;
 }
 
+RID TextureStorage::texture_get_rd_texture_2d_static(RID p_texture, bool p_srgb) const {
+	const Texture *tex = texture_owner.get_or_null(p_texture);
+	if (tex == nullptr || tex->is_render_target || tex->type != TextureStorage::TYPE_2D) {
+		return RID();
+	}
+	return (p_srgb && tex->rd_texture_srgb.is_valid()) ? tex->rd_texture_srgb : tex->rd_texture;
+}
+
 uint64_t TextureStorage::texture_get_native_handle(RID p_texture, bool p_srgb) const {
 	Texture *tex = texture_owner.get_or_null(p_texture);
 	ERR_FAIL_NULL_V(tex, 0);

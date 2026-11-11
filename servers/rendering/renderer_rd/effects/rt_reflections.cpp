@@ -30,6 +30,7 @@
 
 #include "rt_reflections.h"
 
+#include "servers/rendering/renderer_compositor.h"
 #include "servers/rendering/renderer_rd/storage_rd/material_storage.h"
 #include "servers/rendering/renderer_rd/uniform_set_cache_rd.h"
 #include "servers/rendering/renderer_scene_render.h"
@@ -50,13 +51,153 @@ RTReflections::RTReflections() {
 	instances_buffer = RD::get_singleton()->storage_buffer_create(instances_capacity * sizeof(Instance));
 	materials_capacity = 64;
 	materials_buffer = RD::get_singleton()->storage_buffer_create(materials_capacity * sizeof(Material));
+
+	Vector<String> average_modes;
+	average_modes.push_back("");
+	average_shader.initialize(average_modes);
+	average_shader_version = average_shader.version_create();
+	average_pipeline = RD::get_singleton()->compute_pipeline_create(average_shader.version_get_shader(average_shader_version, 0));
+	averages_capacity = 64;
+	averages_buffer = RD::get_singleton()->storage_buffer_create(averages_capacity * sizeof(float) * 4);
 }
 
 RTReflections::~RTReflections() {
+	RD::get_singleton()->free_rid(averages_buffer);
+	average_shader.version_free(average_shader_version);
 	RD::get_singleton()->free_rid(materials_buffer);
 	RD::get_singleton()->free_rid(instances_buffer);
 	RD::get_singleton()->free_rid(params_buffer);
 	shader.version_free(shader_version);
+}
+
+uint32_t RTReflections::get_texture_average(RID p_texture, RID p_rd_texture) {
+	if (p_texture.is_null() || p_rd_texture.is_null()) {
+		return NO_TEXTURE_AVERAGE;
+	}
+	const uint64_t frame = RSG::rasterizer->get_frame_number();
+	uint32_t slot;
+	const uint32_t *existing = texture_average_slots.getptr(p_texture);
+	if (existing) {
+		slot = *existing;
+	} else {
+		if (free_average_slots.size()) {
+			slot = free_average_slots[free_average_slots.size() - 1];
+			free_average_slots.resize(free_average_slots.size() - 1);
+		} else {
+			slot = average_slots.size();
+			average_slots.push_back(AverageSlot());
+		}
+		average_slots[slot] = AverageSlot();
+		average_slots[slot].texture = p_texture;
+		texture_average_slots.insert(p_texture, slot);
+	}
+	AverageSlot &s = average_slots[slot];
+	s.last_used = frame;
+	if (s.rd_texture != p_rd_texture) {
+		s.rd_texture = p_rd_texture;
+		s.ready = false;
+	}
+	if (!s.ready && !s.queued) {
+		s.queued = true;
+		average_queue.push_back(slot);
+	}
+	return s.ready ? slot : NO_TEXTURE_AVERAGE;
+}
+
+void RTReflections::_update_texture_averages() {
+	RD *rd = RD::get_singleton();
+	const uint64_t frame = RSG::rasterizer->get_frame_number();
+
+	// Free the slots of textures no material has asked for in a while (also those of freed textures).
+	const uint64_t prune_interval = 256;
+	if (frame >= averages_pruned + prune_interval) {
+		averages_pruned = frame;
+		for (uint32_t i = 0; i < average_slots.size(); i++) {
+			AverageSlot &s = average_slots[i];
+			if (s.texture.is_valid() && s.last_used + prune_interval < frame) {
+				texture_average_slots.erase(s.texture);
+				s = AverageSlot();
+				free_average_slots.push_back(i);
+			}
+		}
+	}
+
+	if (average_slots.size() > averages_capacity) {
+		const uint32_t capacity = Math::next_power_of_2(average_slots.size());
+		RID buffer = rd->storage_buffer_create(capacity * sizeof(float) * 4);
+		rd->buffer_copy(averages_buffer, buffer, 0, 0, averages_capacity * sizeof(float) * 4);
+		rd->free_rid(averages_buffer);
+		averages_buffer = buffer;
+		averages_capacity = capacity;
+	}
+
+	if (average_queue.is_empty()) {
+		return;
+	}
+
+	// A few textures per frame, so that loading a level does not stall a frame.
+	const uint32_t budget = 8;
+	uint32_t done = 0;
+	uint32_t taken = 0;
+	UniformSetCacheRD *uniform_set_cache = UniformSetCacheRD::get_singleton();
+	MaterialStorage *material_storage = MaterialStorage::get_singleton();
+	RID sampler = material_storage->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_LINEAR_WITH_MIPMAPS, RSE::CANVAS_ITEM_TEXTURE_REPEAT_ENABLED);
+	RID shader_rid = average_shader.version_get_shader(average_shader_version, 0);
+	RD::ComputeListID compute_list = 0;
+	bool started = false;
+	while (taken < average_queue.size() && done < budget) {
+		const uint32_t slot = average_queue[taken++];
+		AverageSlot &s = average_slots[slot];
+		if (!s.queued) {
+			continue; // Freed since it was queued.
+		}
+		s.queued = false;
+		if (!rd->texture_is_valid(s.rd_texture)) {
+			continue;
+		}
+		const RD::TextureFormat format = rd->texture_get_format(s.rd_texture);
+		if (format.texture_type != RD::TEXTURE_TYPE_2D) {
+			continue;
+		}
+		// The first mip whose larger side is below 256 texels: the 64x64 grid of bilinear taps covers a 128 texel mip
+		// exactly, and staying high in the chain keeps the mips (often averaged in sRGB space) from biasing the color.
+		const uint32_t largest = MAX(format.width, format.height);
+		float lod = 0.0;
+		if (largest >= 256) {
+			lod = Math::floor(Math::log2(float(largest) / 128.0f));
+		}
+		lod = CLAMP(lod, 0.0f, float(MAX(format.mipmaps, 1u) - 1));
+		if (!started) {
+			started = true;
+			compute_list = rd->compute_list_begin();
+			rd->compute_list_bind_compute_pipeline(compute_list, average_pipeline);
+		}
+		RD::Uniform u_texture(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 0, Vector<RID>({ sampler, s.rd_texture }));
+		RD::Uniform u_averages(RD::UNIFORM_TYPE_STORAGE_BUFFER, 1, averages_buffer);
+		rd->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(shader_rid, 0, u_texture, u_averages), 0);
+		struct {
+			uint32_t slot;
+			float lod;
+			uint32_t pad[2];
+		} push = { slot, lod, { 0, 0 } };
+		rd->compute_list_set_push_constant(compute_list, &push, sizeof(push));
+		rd->compute_list_dispatch(compute_list, 1, 1, 1);
+		s.ready = true;
+		done++;
+	}
+	if (started) {
+		rd->compute_list_end();
+	}
+	// Drop what was taken; the rest waits for the next frames.
+	if (taken >= average_queue.size()) {
+		average_queue.clear();
+	} else {
+		LocalVector<uint32_t> rest;
+		for (uint32_t i = taken; i < average_queue.size(); i++) {
+			rest.push_back(average_queue[i]);
+		}
+		average_queue = rest;
+	}
 }
 
 void RTReflections::update_tables(const LocalVector<Instance> &p_instances, const LocalVector<Material> &p_materials) {
@@ -76,6 +217,7 @@ void RTReflections::update_tables(const LocalVector<Instance> &p_instances, cons
 	if (p_materials.size()) {
 		RD::get_singleton()->buffer_update(materials_buffer, 0, p_materials.size() * sizeof(Material), p_materials.ptr());
 	}
+	_update_texture_averages();
 }
 
 void RTReflections::process(Ref<RenderSceneBuffersRD> p_render_buffers, RTDenoiser::History &r_history, RID p_tlas, RID p_depth, RID p_normal_roughness, RID p_last_frame, RID p_destination, const Lights &p_lights, const Projection &p_projection, const Transform3D &p_cam_transform, const Projection &p_prev_projection, const Transform3D &p_prev_cam_transform, uint64_t p_frame, const Settings &p_settings) {
@@ -143,10 +285,11 @@ void RTReflections::process(Ref<RenderSceneBuffersRD> p_render_buffers, RTDenois
 	RD::Uniform u_dest(RD::UNIFORM_TYPE_IMAGE, 9, raw);
 	RD::Uniform u_hit(RD::UNIFORM_TYPE_IMAGE, 10, hit_distance);
 	RD::Uniform u_params(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 11, params_buffer);
+	RD::Uniform u_averages(RD::UNIFORM_TYPE_STORAGE_BUFFER, 12, averages_buffer);
 
 	RD::ComputeListID compute_list = RD::get_singleton()->compute_list_begin();
 	RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, pipeline);
-	RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(compute_shader, 0, u_depth, u_normal, u_tlas, u_instances, u_materials, u_omni, u_spot, u_directional, u_last_frame, u_dest, u_hit, u_params), 0);
+	RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(compute_shader, 0, u_depth, u_normal, u_tlas, u_instances, u_materials, u_omni, u_spot, u_directional, u_last_frame, u_dest, u_hit, u_params, u_averages), 0);
 	RD::get_singleton()->compute_list_dispatch_threads(compute_list, size.x, size.y, 1);
 	RD::get_singleton()->compute_list_end();
 

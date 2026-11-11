@@ -504,6 +504,11 @@ public:
 	// Nonzero for a live material; changes whenever its parameters, shader or next pass may have changed, so data
 	// derived from them can be cached. Never repeats, also across freed and reused RIDs.
 	uint64_t material_get_version(RID p_material) const;
+	// The texture a material's base color most likely comes from: the `texture_albedo` uniform (the name
+	// BaseMaterial3D uses), else the first sampler2D uniform declared with `source_color`. The texture set on the
+	// material, else the shader's default for that uniform; invalid if neither. r_srgb is true when the uniform is
+	// declared with `source_color`.
+	RID material_get_albedo_texture(RID p_material, bool &r_srgb) const;
 
 	virtual void material_set_next_pass(RID p_material, RID p_next_material) override;
 	virtual void material_set_render_priority(RID p_material, int priority) override;
