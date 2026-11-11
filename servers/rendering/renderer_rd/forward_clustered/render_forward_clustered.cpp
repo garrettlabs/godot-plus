@@ -2343,6 +2343,8 @@ void RenderForwardClustered::_process_rt_ao(const RenderDataRD *p_render_data, R
 	// Shadow casters occlude. The visible mask would also take in transparent and effect geometry (light beams,
 	// fog cards), which darkens whatever stands inside it.
 	settings.instance_mask = RT_INSTANCE_MASK_SHADOW_CASTER;
+	settings.view_consistent_hits = GLOBAL_GET_CACHED(bool, "rendering/raytracing/scene/view_consistent_hits");
+	settings.taa_jitter = p_render_data->scene_data->taa_jitter;
 
 	RENDER_TIMESTAMP("Ray Traced AO");
 	RD::get_singleton()->draw_command_begin_label("Ray Traced AO");
@@ -2376,6 +2378,8 @@ void RenderForwardClustered::_process_rt_reflections(const RenderDataRD *p_rende
 	// The last frame image is only usable if it was rendered by this view with the camera recorded below.
 	settings.screen_reuse = debug_view != 5 && p_rb_data->rt_reflections_last_frame != UINT64_MAX && p_rb_data->rt_reflections_last_frame + 1 == frame;
 	settings.emission_scale = p_render_data->scene_data->emissive_exposure_normalization > 0.0f ? p_render_data->scene_data->emissive_exposure_normalization : 1.0f;
+	settings.view_consistent_hits = GLOBAL_GET_CACHED(bool, "rendering/raytracing/scene/view_consistent_hits");
+	settings.taa_jitter = p_render_data->scene_data->taa_jitter;
 
 	// Ambient light at table-shaded hits, as the scene data computes it for the forward pass (sky ambient is not
 	// sampled: its ambient color stands in).

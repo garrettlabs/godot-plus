@@ -12,6 +12,8 @@
 //    emission read from the material's uniforms by name), the view's omni, spot and directional lights (the strongest
 //    few with a shadow ray) and the ambient light. The hit normal comes from the triangle's positions, read through
 //    buffer addresses from the vertex and index buffers the BLAS was built from.
+// With view-consistent hits, a hit on screen where the view sees past it (the view did not draw that surface there) is
+// skipped and the ray continues; shadow rays of table shading are not checked (they answer for a light).
 // Output: premultiplied reflection (alpha 1 on a hit, 0 on a miss) and the hit distance.
 
 // glslang only accepts ray queries from GLSL 460 on.
@@ -81,6 +83,7 @@ layout(set = 0, binding = 11, std140) uniform Params {
 	mat4 view_to_world;
 	mat4 world_to_view;
 	mat4 reprojection; // Current view to last frame's clip, for the last frame's image.
+	mat4 world_to_clip; // The projection the depth buffer was rendered with, jitter included.
 	vec4 ambient; // rgb: ambient light (linear, energy applied).
 	ivec2 screen_size;
 	uint frame;
@@ -94,11 +97,13 @@ layout(set = 0, binding = 11, std140) uniform Params {
 	float emission_scale;
 	uint debug_view;
 	uint screen_reuse;
-	uint pad0;
+	uint view_consistent; // Skip hits the view sees past (see rt_view_hit_inc.glsl).
 	uint pad1;
 	uint pad2;
 }
 params;
+
+#include "rt_view_hit_inc.glsl"
 
 layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer Words {
 	uint w[];
@@ -330,12 +335,40 @@ void main() {
 		float view_dist = length(view_pos);
 		vec3 origin = world_pos + n * (params.normal_bias * (1.0 + view_dist * 0.05));
 
-		rayQueryEXT rq;
-		rayQueryInitializeEXT(rq, tlas, gl_RayFlagsOpaqueEXT, params.instance_mask, origin, 0.0, dir, 1000.0);
-		while (rayQueryProceedEXT(rq)) {
+		// Closest hit; with view-consistent hits, skip those the view sees past (single exit: every trace runs its
+		// query). The committed hit's data is copied out of the query that found it.
+		uint traces = params.view_consistent != 0u ? RT_VIEW_HIT_MAX_SKIPS + 1u : 1u;
+		float t_min = 0.0;
+		bool searching = true;
+		bool hit = false;
+		uint skipped = 0u;
+		uint hit_custom_index = 0u;
+		uint hit_primitive = 0u;
+		mat4x3 hit_object_to_world = mat4x3(1.0);
+		for (uint i = 0u; i < traces; i++) {
+			if (searching) {
+				rayQueryEXT rq;
+				rayQueryInitializeEXT(rq, tlas, gl_RayFlagsOpaqueEXT, params.instance_mask, origin, t_min, dir, 1000.0);
+				while (rayQueryProceedEXT(rq)) {
+				}
+				searching = false;
+				if (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
+					float t = rayQueryGetIntersectionTEXT(rq, true);
+					if (params.view_consistent != 0u && rt_hit_hidden_from_view(origin + dir * t, params.world_to_clip, params.inv_projection, params.screen_size)) {
+						t_min = min(rt_view_hit_resume(t), 1000.0);
+						searching = true;
+						skipped++;
+					} else {
+						hit = true;
+						hit_distance = t;
+						hit_custom_index = rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true);
+						hit_primitive = rayQueryGetIntersectionPrimitiveIndexEXT(rq, true);
+						hit_object_to_world = rayQueryGetIntersectionObjectToWorldEXT(rq, true);
+					}
+				}
+			}
 		}
-		if (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
-			hit_distance = rayQueryGetIntersectionTEXT(rq, true);
+		if (hit) {
 			vec3 hit_world = origin + dir * hit_distance;
 			vec3 hit_view = (params.world_to_view * vec4(hit_world, 1.0)).xyz;
 
@@ -361,18 +394,18 @@ void main() {
 			}
 
 			// Tier 2: table shading.
-			uint instance_index = rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true);
+			uint instance_index = hit_custom_index;
 			Instance inst = instances.data[instance_index];
 			Material mat = materials.data[inst.material];
 			vec3 hit_normal = -dir;
 			if ((inst.flags & INSTANCE_FLAG_GEOMETRY) != 0u) {
-				uint prim = rayQueryGetIntersectionPrimitiveIndexEXT(rq, true);
+				uint prim = hit_primitive;
 				bool packed = (inst.flags & INSTANCE_FLAG_PACKED) != 0u;
 				vec3 p0 = fetch_position(inst.vertex_address, packed, fetch_index(inst, prim, 0u));
 				vec3 p1 = fetch_position(inst.vertex_address, packed, fetch_index(inst, prim, 1u));
 				vec3 p2 = fetch_position(inst.vertex_address, packed, fetch_index(inst, prim, 2u));
 				vec3 on = cross(p1 - p0, p2 - p0);
-				mat4x3 o2w = rayQueryGetIntersectionObjectToWorldEXT(rq, true);
+				mat4x3 o2w = hit_object_to_world;
 				vec3 wn = transpose(inverse(mat3(o2w))) * on;
 				float len = length(wn);
 				if (len > 1e-20) {
@@ -397,9 +430,12 @@ void main() {
 			} else if (params.debug_view == 2u) {
 				color = hit_normal * 0.5 + 0.5;
 			} else if (params.debug_view == 3u) {
-				color = reused ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+				// After skipped hits: cyan (screen) and magenta (table) instead of green and red.
+				color = reused ? vec3(0.0, 1.0, skipped > 0u ? 1.0 : 0.0) : vec3(1.0, 0.0, skipped > 0u ? 1.0 : 0.0);
 			}
 			result = vec4(color, 1.0);
+		} else if (params.debug_view == 3u && skipped > 0u) {
+			result = vec4(0.0, 0.0, 1.0, 1.0); // Skipped hits, then a miss: blue.
 		}
 	}
 

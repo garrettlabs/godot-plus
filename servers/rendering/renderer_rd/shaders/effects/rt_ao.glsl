@@ -20,6 +20,7 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 layout(set = 0, binding = 5, std140) uniform Params {
 	mat4 inv_projection;
 	mat4 view_to_world;
+	mat4 world_to_clip; // The projection the depth buffer was rendered with, jitter included.
 	ivec2 screen_size;
 	uint frame;
 	uint ray_count;
@@ -28,7 +29,7 @@ layout(set = 0, binding = 5, std140) uniform Params {
 	float power;
 	uint instance_mask;
 	float normal_bias;
-	float pad0;
+	uint view_consistent; // Skip hits the view sees past (see rt_view_hit_inc.glsl).
 	float pad1;
 	float pad2;
 }
@@ -40,6 +41,8 @@ layout(set = 0, binding = 0) uniform sampler2D source_depth;
 layout(set = 0, binding = 1) uniform sampler2D source_normal_roughness;
 layout(set = 0, binding = 2) uniform accelerationStructureEXT tlas;
 layout(r16f, set = 0, binding = 3) uniform restrict writeonly image2D dest_visibility;
+
+#include "rt_view_hit_inc.glsl"
 
 float ign(vec2 p) {
 	// Interleaved gradient noise.
@@ -59,15 +62,36 @@ vec3 view_position(ivec2 p_pixel, float p_depth) {
 }
 
 // Distance weighted occlusion of one ray: 1.0 for a hit at the origin, 0.0 for a miss or a hit at the ray length.
+// With view-consistent hits, a hit the view sees past is skipped and the ray continues behind it; a ray still
+// skipping after the last allowed skip counts as a miss.
 // Single exit: every path runs the query (an early return before it once made every ray miss).
 float ray_occlusion(vec3 p_origin, vec3 p_dir, float p_length) {
-	rayQueryEXT rq;
-	rayQueryInitializeEXT(rq, tlas, gl_RayFlagsOpaqueEXT, params.instance_mask, p_origin, 0.0, p_dir, max(p_length, 1e-4));
-	while (rayQueryProceedEXT(rq)) {
+	float len = max(p_length, 1e-4);
+	uint traces = params.view_consistent != 0u ? RT_VIEW_HIT_MAX_SKIPS + 1u : 1u;
+	float t_min = 0.0;
+	float t_hit = -1.0;
+	bool searching = true;
+	for (uint i = 0u; i < traces; i++) {
+		if (searching) {
+			rayQueryEXT rq;
+			rayQueryInitializeEXT(rq, tlas, gl_RayFlagsOpaqueEXT, params.instance_mask, p_origin, t_min, p_dir, len);
+			while (rayQueryProceedEXT(rq)) {
+			}
+			searching = false;
+			if (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
+				float t = rayQueryGetIntersectionTEXT(rq, true);
+				if (params.view_consistent != 0u && rt_hit_hidden_from_view(p_origin + p_dir * t, params.world_to_clip, params.inv_projection, params.screen_size)) {
+					t_min = min(rt_view_hit_resume(t), len);
+					searching = true;
+				} else {
+					t_hit = t;
+				}
+			}
+		}
 	}
 	float occlusion = 0.0;
-	if (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
-		float t = clamp(rayQueryGetIntersectionTEXT(rq, true) / max(p_length, 1e-4), 0.0, 1.0);
+	if (t_hit >= 0.0) {
+		float t = clamp(t_hit / len, 0.0, 1.0);
 		occlusion = 1.0 - t * t;
 	}
 	return occlusion;
