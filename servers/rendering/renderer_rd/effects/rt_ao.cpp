@@ -66,6 +66,10 @@ void RTAmbientOcclusion::process(Ref<RenderSceneBuffersRD> p_render_buffers, RTD
 	correction.set_depth_correction(true);
 	MaterialStorage::store_camera((correction * p_projection).inverse(), params.inv_projection);
 	MaterialStorage::store_transform(p_cam_transform, params.view_to_world);
+	Projection jittered_correction;
+	jittered_correction.set_depth_correction(true);
+	jittered_correction.add_jitter_offset(p_settings.taa_jitter);
+	MaterialStorage::store_camera(jittered_correction * p_projection * Projection(p_cam_transform.affine_inverse()), params.world_to_clip);
 	params.screen_size[0] = size.x;
 	params.screen_size[1] = size.y;
 	params.frame = uint32_t(p_frame);
@@ -75,6 +79,7 @@ void RTAmbientOcclusion::process(Ref<RenderSceneBuffersRD> p_render_buffers, RTD
 	params.power = p_settings.power;
 	params.instance_mask = p_settings.instance_mask;
 	params.normal_bias = 0.01;
+	params.view_consistent = p_settings.view_consistent_hits ? 1 : 0;
 	RD::get_singleton()->buffer_update(params_buffer, 0, sizeof(Params), &params);
 
 	RID nearest = material_storage->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_NEAREST, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED);

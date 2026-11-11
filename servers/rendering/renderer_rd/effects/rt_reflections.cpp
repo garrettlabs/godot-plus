@@ -100,6 +100,10 @@ void RTReflections::process(Ref<RenderSceneBuffersRD> p_render_buffers, RTDenois
 	MaterialStorage::store_transform(p_cam_transform, params.view_to_world);
 	MaterialStorage::store_transform(world_to_view, params.world_to_view);
 	MaterialStorage::store_camera(prev_projection * Projection(p_prev_cam_transform.affine_inverse() * p_cam_transform), params.reprojection);
+	Projection jittered_correction;
+	jittered_correction.set_depth_correction(true);
+	jittered_correction.add_jitter_offset(p_settings.taa_jitter);
+	MaterialStorage::store_camera(jittered_correction * p_projection * Projection(world_to_view), params.world_to_clip);
 	params.ambient[0] = p_settings.ambient.r;
 	params.ambient[1] = p_settings.ambient.g;
 	params.ambient[2] = p_settings.ambient.b;
@@ -116,6 +120,7 @@ void RTReflections::process(Ref<RenderSceneBuffersRD> p_render_buffers, RTDenois
 	params.emission_scale = p_settings.emission_scale;
 	params.debug_view = p_settings.debug_view;
 	params.screen_reuse = p_settings.screen_reuse ? 1 : 0;
+	params.view_consistent = p_settings.view_consistent_hits ? 1 : 0;
 	RD::get_singleton()->buffer_update(params_buffer, 0, sizeof(Params), &params);
 
 	RID nearest = material_storage->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_NEAREST, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED);

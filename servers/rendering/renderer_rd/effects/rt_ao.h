@@ -59,12 +59,16 @@ public:
 		uint32_t ray_count = 2;
 		uint32_t instance_mask = 0xFF;
 		bool denoise = true;
+		// Skip hits on screen where the view sees past them (see rt_view_hit_inc.glsl).
+		bool view_consistent_hits = true;
+		Vector2 taa_jitter; // The jitter the depth buffer was rendered with.
 	};
 
 private:
 	struct Params {
 		float inv_projection[16];
 		float view_to_world[16];
+		float world_to_clip[16];
 		int32_t screen_size[2];
 		uint32_t frame;
 		uint32_t ray_count;
@@ -73,7 +77,8 @@ private:
 		float power;
 		uint32_t instance_mask;
 		float normal_bias;
-		float pad[3];
+		uint32_t view_consistent;
+		float pad[2];
 	};
 	static_assert(sizeof(Params) % 16 == 0);
 

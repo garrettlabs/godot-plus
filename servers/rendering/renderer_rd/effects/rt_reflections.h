@@ -87,6 +87,9 @@ public:
 		float max_roughness = 0.7; // The forward pass fades reflections out above 0.6 and drops them at 0.7.
 		float emission_scale = 1.0;
 		Color ambient;
+		// Skip hits on screen where the view sees past them (see rt_view_hit_inc.glsl).
+		bool view_consistent_hits = true;
+		Vector2 taa_jitter; // The jitter the depth buffer was rendered with.
 	};
 
 private:
@@ -96,6 +99,7 @@ private:
 		float view_to_world[16];
 		float world_to_view[16];
 		float reprojection[16];
+		float world_to_clip[16];
 		float ambient[4];
 		int32_t screen_size[2];
 		uint32_t frame;
@@ -109,7 +113,8 @@ private:
 		float emission_scale;
 		uint32_t debug_view;
 		uint32_t screen_reuse;
-		uint32_t pad[3];
+		uint32_t view_consistent;
+		uint32_t pad[2];
 	};
 	static_assert(sizeof(Params) % 16 == 0);
 
