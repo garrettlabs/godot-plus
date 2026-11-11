@@ -1229,6 +1229,29 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 				shadow_atlas_owns_light_instance(p_shadow_atlas, light_instance->self) &&
 				light->shadow;
 
+		// The projector reads shadow_matrix to find its UV, so lights that render no shadow map (ray traced
+		// lights, lights with shadows off) need it too. The shadow map branch below overwrites it with the
+		// rendered camera's matrix, which is the same numbers for spot lights.
+		if (projector.is_valid() && (type == RSE::LIGHT_OMNI || type == RSE::LIGHT_SPOT)) {
+			if (type == RSE::LIGHT_OMNI) {
+				Transform3D proj = (inverse_transform * light_transform).inverse();
+				RendererRD::MaterialStorage::store_transform(proj, light_data.shadow_matrix);
+			} else {
+				Transform3D modelview = (inverse_transform * light_transform).inverse();
+				Projection bias;
+				bias.set_light_bias();
+
+				Projection correction;
+				correction.set_depth_correction(false, true, false);
+
+				// Same camera the shadow pass renders with (RendererSceneCull::_light_instance_update_shadow).
+				Projection light_camera;
+				light_camera.set_perspective(spot_angle * 2.0, 1.0, MIN(0.025f, radius), radius);
+				Projection projector_mtx = bias * correction * light_camera * modelview;
+				RendererRD::MaterialStorage::store_camera(projector_mtx, light_data.shadow_matrix);
+			}
+		}
+
 		bool in_shadow_range = true;
 		if ((needs_shadow || rt_shadow) && light->distance_fade) {
 			if (distance > light->distance_fade_shadow + light->distance_fade_length) {
