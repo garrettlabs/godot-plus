@@ -2443,6 +2443,7 @@ void MaterialStorage::_material_uniform_set_erased(void *p_material) {
 }
 
 void MaterialStorage::_material_queue_update(Material *material, bool p_uniform, bool p_texture) {
+	material->version = material_version_counter.increment();
 	MutexLock lock(material_update_list_mutex);
 	material->uniform_dirty = material->uniform_dirty || p_uniform;
 	material->texture_dirty = material->texture_dirty || p_texture;
@@ -2491,6 +2492,7 @@ void MaterialStorage::material_initialize(RID p_rid) {
 	material_owner.initialize_rid(p_rid);
 	Material *material = material_owner.get_or_null(p_rid);
 	material->self = p_rid;
+	material->version = material_version_counter.increment();
 }
 
 void MaterialStorage::material_free(RID p_rid) {
@@ -2516,6 +2518,7 @@ void MaterialStorage::material_set_shader(RID p_material, RID p_shader) {
 	Material *material = material_owner.get_or_null(p_material);
 	ERR_FAIL_NULL(material);
 
+	material->version = material_version_counter.increment();
 	if (material->data) {
 		memdelete(material->data);
 		material->data = nullptr;
@@ -2615,6 +2618,11 @@ Variant MaterialStorage::material_get_param_or_default(RID p_material, const Str
 	return Variant();
 }
 
+uint64_t MaterialStorage::material_get_version(RID p_material) const {
+	const Material *material = material_owner.get_or_null(p_material);
+	return material ? material->version : 0;
+}
+
 void MaterialStorage::material_set_next_pass(RID p_material, RID p_next_material) {
 	Material *material = material_owner.get_or_null(p_material);
 	ERR_FAIL_NULL(material);
@@ -2624,6 +2632,7 @@ void MaterialStorage::material_set_next_pass(RID p_material, RID p_next_material
 	}
 
 	material->next_pass = p_next_material;
+	material->version = material_version_counter.increment();
 	if (material->data) {
 		material->data->set_next_pass(p_next_material);
 	}

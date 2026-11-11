@@ -218,6 +218,17 @@ private:
 	HashMap<RID, uint32_t> rt_reflection_material_index;
 	HashMap<const void *, RendererRD::RTReflections::Instance> rt_reflection_surface_geometry;
 
+	// Material records kept across frames, valid while the material's version is unchanged. Records not used for a
+	// while are dropped; a freed material's RID is never handed out again, so its record cannot be picked up.
+	struct RTReflectionMaterialCache {
+		uint64_t version = 0;
+		uint64_t last_used = 0;
+		RendererRD::RTReflections::Material record;
+	};
+	HashMap<RID, RTReflectionMaterialCache> rt_reflection_material_cache;
+	uint64_t rt_reflection_material_cache_pruned = 0;
+	LocalVector<RID> rt_reflection_material_cache_stale;
+
 	/* Ray traced shadows */
 
 	RendererRD::RTShadows *rt_shadows = nullptr; // Only with ray tracing enabled: its shader needs ray queries.
@@ -746,6 +757,8 @@ private:
 	void _update_global_pipeline_data_requirements_from_project();
 	void _update_global_pipeline_data_requirements_from_light_storage();
 	RendererRD::RTReflections::Material _rt_reflection_material(RID p_material);
+	const RendererRD::RTReflections::Material &_rt_reflection_material_cached(RID p_material);
+	void _rt_reflection_prune_material_cache();
 	void _rt_reflection_instance(const GeometryInstanceForwardClustered *p_instance, const GeometryInstanceSurfaceDataCache *p_surface, bool p_deformed, RendererRD::RTReflections::Instance &r_record);
 	void _geometry_instance_add_surface_with_material(GeometryInstanceForwardClustered *ginstance, uint32_t p_surface, SceneShaderForwardClustered::MaterialData *p_material, uint32_t p_material_id, uint32_t p_shader_id, RID p_mesh);
 	void _geometry_instance_add_surface_with_material_chain(GeometryInstanceForwardClustered *ginstance, uint32_t p_surface, SceneShaderForwardClustered::MaterialData *p_material, RID p_mat_src, RID p_mesh);

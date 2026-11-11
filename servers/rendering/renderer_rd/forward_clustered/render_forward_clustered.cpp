@@ -2113,7 +2113,41 @@ void RenderForwardClustered::_rt_reflection_instance(const GeometryInstanceForwa
 	} else {
 		r_record.material = rt_reflection_materials.size();
 		rt_reflection_material_index.insert(material, r_record.material);
-		rt_reflection_materials.push_back(_rt_reflection_material(material));
+		rt_reflection_materials.push_back(_rt_reflection_material_cached(material));
+	}
+}
+
+const RendererRD::RTReflections::Material &RenderForwardClustered::_rt_reflection_material_cached(RID p_material) {
+	const uint64_t version = RendererRD::MaterialStorage::get_singleton()->material_get_version(p_material);
+	RTReflectionMaterialCache *entry = rt_reflection_material_cache.getptr(p_material);
+	if (entry == nullptr) {
+		entry = &rt_reflection_material_cache.insert(p_material, RTReflectionMaterialCache())->value;
+		entry->version = version;
+		entry->record = _rt_reflection_material(p_material);
+	} else if (entry->version != version) {
+		entry->version = version;
+		entry->record = _rt_reflection_material(p_material);
+	}
+	entry->last_used = RSG::rasterizer->get_frame_number();
+	return entry->record;
+}
+
+void RenderForwardClustered::_rt_reflection_prune_material_cache() {
+	// Every few seconds, drop the records of materials no view has used for as long.
+	const uint64_t frame = RSG::rasterizer->get_frame_number();
+	const uint64_t interval = 256;
+	if (frame < rt_reflection_material_cache_pruned + interval) {
+		return;
+	}
+	rt_reflection_material_cache_pruned = frame;
+	rt_reflection_material_cache_stale.clear();
+	for (const KeyValue<RID, RTReflectionMaterialCache> &E : rt_reflection_material_cache) {
+		if (E.value.last_used + interval < frame) {
+			rt_reflection_material_cache_stale.push_back(E.key);
+		}
+	}
+	for (const RID &rid : rt_reflection_material_cache_stale) {
+		rt_reflection_material_cache.erase(rid);
 	}
 }
 
@@ -2273,9 +2307,10 @@ void RenderForwardClustered::_update_raytracing_scene(const RenderDataRD *p_rend
 
 	if (p_reflection_tables) {
 		if (rt_reflection_materials.is_empty()) {
-			rt_reflection_materials.push_back(_rt_reflection_material(RID()));
+			rt_reflection_materials.push_back(_rt_reflection_material_cached(RID()));
 		}
 		rt_reflections->update_tables(rt_reflection_instances, rt_reflection_materials);
+		_rt_reflection_prune_material_cache();
 	}
 
 	if (r_render_info) {
