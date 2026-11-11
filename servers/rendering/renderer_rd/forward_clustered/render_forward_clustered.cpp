@@ -140,6 +140,7 @@ void RenderForwardClustered::RenderBufferDataForwardClustered::free_data() {
 	rt_reflections_active = false;
 	rt_reflections_history = RendererRD::RTDenoiser::History();
 	rt_reflections_last_frame = UINT64_MAX;
+	rt_reflections_half_size = false;
 
 	if (cluster_builder) {
 		memdelete(cluster_builder);
@@ -2418,6 +2419,15 @@ void RenderForwardClustered::_process_rt_reflections(const RenderDataRD *p_rende
 		rb->clear_context(RB_SCOPE_SSR);
 	}
 	ss_effects->allocate_last_frame_buffer(rb, environment_get_ssil_enabled(environment), true);
+	const bool half_size = GLOBAL_GET_CACHED(bool, "rendering/raytracing/reflections/half_size");
+	if (half_size != p_rb_data->rt_reflections_half_size) {
+		// Switching between full and half size: start over with textures and history of the new size.
+		rb->clear_context(RB_SCOPE_RT_REFLECTIONS);
+		rb->clear_context(RB_SCOPE_RT_REFLECTIONS_DENOISE);
+		p_rb_data->rt_reflections_history = RendererRD::RTDenoiser::History();
+		p_rb_data->rt_reflections_last_frame = UINT64_MAX;
+		p_rb_data->rt_reflections_half_size = half_size;
+	}
 	RID destination = rb->create_texture(RB_SCOPE_RT_REFLECTIONS, SNAME("final"), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT, RD::TEXTURE_SAMPLES_1, rb->get_internal_size(), 1);
 	RID last_frame = rb->get_texture_slice(RB_SCOPE_SSLF, RB_LAST_FRAME, 0, 0);
 
@@ -2434,6 +2444,7 @@ void RenderForwardClustered::_process_rt_reflections(const RenderDataRD *p_rende
 	settings.emission_scale = p_render_data->scene_data->emissive_exposure_normalization > 0.0f ? p_render_data->scene_data->emissive_exposure_normalization : 1.0f;
 	settings.view_consistent_hits = GLOBAL_GET_CACHED(bool, "rendering/raytracing/scene/view_consistent_hits");
 	settings.taa_jitter = p_render_data->scene_data->taa_jitter;
+	settings.half_size = half_size;
 
 	// Ambient light at table-shaded hits, as the scene data computes it for the forward pass (sky ambient is not
 	// sampled: its ambient color stands in).

@@ -147,6 +147,7 @@ public:
 		Projection rt_reflections_prev_projection;
 		Transform3D rt_reflections_prev_cam_transform;
 		uint64_t rt_reflections_last_frame = UINT64_MAX;
+		bool rt_reflections_half_size = false; // Size the reflection textures were made for.
 
 		void ensure_specular();
 		bool has_specular() const { return render_buffers->has_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_SPECULAR); }

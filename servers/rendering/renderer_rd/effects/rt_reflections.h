@@ -95,6 +95,7 @@ public:
 		// Skip hits on screen where the view sees past them (see rt_view_hit_inc.glsl).
 		bool view_consistent_hits = true;
 		Vector2 taa_jitter; // The jitter the depth buffer was rendered with.
+		bool half_size = false; // Trace and denoise at half size, then upsample.
 	};
 
 private:
@@ -119,13 +120,14 @@ private:
 		uint32_t debug_view;
 		uint32_t screen_reuse;
 		uint32_t view_consistent;
-		uint32_t pad[2];
+		int32_t trace_size[2];
 	};
 	static_assert(sizeof(Params) % 16 == 0);
 
 	RtReflectionsShaderRD shader;
 	RID shader_version;
 	RID pipeline;
+	RID pipeline_half;
 	RID params_buffer;
 	RID instances_buffer;
 	uint32_t instances_capacity = 0;

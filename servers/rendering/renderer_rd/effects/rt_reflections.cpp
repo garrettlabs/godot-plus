@@ -41,10 +41,12 @@ using namespace RendererRD;
 RTReflections::RTReflections() {
 	Vector<String> modes;
 	modes.push_back("");
+	modes.push_back("\n#define MODE_HALF_SIZE\n");
 	String defines = "\n#define MAX_DIRECTIONAL_LIGHT_DATA_STRUCTS " + itos(RendererSceneRender::MAX_DIRECTIONAL_LIGHTS) + "\n";
 	shader.initialize(modes, defines);
 	shader_version = shader.version_create();
 	pipeline = RD::get_singleton()->compute_pipeline_create(shader.version_get_shader(shader_version, 0));
+	pipeline_half = RD::get_singleton()->compute_pipeline_create(shader.version_get_shader(shader_version, 1));
 	params_buffer = RD::get_singleton()->uniform_buffer_create(sizeof(Params));
 	// Never empty, so the uniform set is always complete.
 	instances_capacity = 64;
@@ -224,11 +226,27 @@ void RTReflections::process(Ref<RenderSceneBuffersRD> p_render_buffers, RTDenois
 	UniformSetCacheRD *uniform_set_cache = UniformSetCacheRD::get_singleton();
 	MaterialStorage *material_storage = MaterialStorage::get_singleton();
 
-	const Size2i size = p_render_buffers->get_internal_size();
+	const Size2i full_size = p_render_buffers->get_internal_size();
+	const bool half = p_settings.half_size;
+	const Size2i size = half ? Size2i((full_size.x + 1) / 2, (full_size.y + 1) / 2) : full_size;
 	const uint32_t usage = RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT;
 	const bool denoise = p_settings.denoise && p_settings.debug_view == 0;
-	RID raw = denoise ? p_render_buffers->create_texture(RB_SCOPE_RT_REFLECTIONS, SNAME("raw"), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage, RD::TEXTURE_SAMPLES_1, size, 1) : p_destination;
-	RID hit_distance = p_render_buffers->create_texture(RB_SCOPE_RT_REFLECTIONS, SNAME("hit_distance"), RD::DATA_FORMAT_R16_SFLOAT, usage, RD::TEXTURE_SAMPLES_1, size, 1);
+	RID raw;
+	RID hit_distance;
+	RID guide_depth;
+	RID guide_normal_roughness;
+	RID filtered; // What the upsample reads at half size.
+	if (half) {
+		// The caller clears the context when half_size changes, so these never coexist with the full-size ones.
+		raw = p_render_buffers->create_texture(RB_SCOPE_RT_REFLECTIONS, SNAME("raw_half"), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage, RD::TEXTURE_SAMPLES_1, size, 1);
+		hit_distance = p_render_buffers->create_texture(RB_SCOPE_RT_REFLECTIONS, SNAME("hit_distance_half"), RD::DATA_FORMAT_R16_SFLOAT, usage, RD::TEXTURE_SAMPLES_1, size, 1);
+		guide_depth = p_render_buffers->create_texture(RB_SCOPE_RT_REFLECTIONS, SNAME("guide_depth_half"), RD::DATA_FORMAT_R32_SFLOAT, usage, RD::TEXTURE_SAMPLES_1, size, 1);
+		guide_normal_roughness = p_render_buffers->create_texture(RB_SCOPE_RT_REFLECTIONS, SNAME("guide_normal_roughness_half"), RD::DATA_FORMAT_R8G8B8A8_UNORM, usage, RD::TEXTURE_SAMPLES_1, size, 1);
+		filtered = denoise ? p_render_buffers->create_texture(RB_SCOPE_RT_REFLECTIONS, SNAME("filtered_half"), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage, RD::TEXTURE_SAMPLES_1, size, 1) : raw;
+	} else {
+		raw = denoise ? p_render_buffers->create_texture(RB_SCOPE_RT_REFLECTIONS, SNAME("raw"), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, usage, RD::TEXTURE_SAMPLES_1, size, 1) : p_destination;
+		hit_distance = p_render_buffers->create_texture(RB_SCOPE_RT_REFLECTIONS, SNAME("hit_distance"), RD::DATA_FORMAT_R16_SFLOAT, usage, RD::TEXTURE_SAMPLES_1, size, 1);
+	}
 
 	Projection correction;
 	correction.set_depth_correction(true);
@@ -249,8 +267,8 @@ void RTReflections::process(Ref<RenderSceneBuffersRD> p_render_buffers, RTDenois
 	params.ambient[0] = p_settings.ambient.r;
 	params.ambient[1] = p_settings.ambient.g;
 	params.ambient[2] = p_settings.ambient.b;
-	params.screen_size[0] = size.x;
-	params.screen_size[1] = size.y;
+	params.screen_size[0] = full_size.x;
+	params.screen_size[1] = full_size.y;
 	params.frame = uint32_t(p_frame);
 	params.instance_mask = p_settings.instance_mask;
 	params.omni_count = p_lights.omni_buffer.is_valid() ? p_lights.omni_count : 0;
@@ -263,11 +281,13 @@ void RTReflections::process(Ref<RenderSceneBuffersRD> p_render_buffers, RTDenois
 	params.debug_view = p_settings.debug_view;
 	params.screen_reuse = p_settings.screen_reuse ? 1 : 0;
 	params.view_consistent = p_settings.view_consistent_hits ? 1 : 0;
+	params.trace_size[0] = size.x;
+	params.trace_size[1] = size.y;
 	RD::get_singleton()->buffer_update(params_buffer, 0, sizeof(Params), &params);
 
 	RID nearest = material_storage->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_NEAREST, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED);
 	RID linear = material_storage->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_LINEAR, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED);
-	RID compute_shader = shader.version_get_shader(shader_version, 0);
+	RID compute_shader = shader.version_get_shader(shader_version, half ? 1 : 0);
 
 	// Lights without data this frame bind a table that is never read (their count is zero).
 	RID omni = p_lights.omni_buffer.is_valid() ? p_lights.omni_buffer : instances_buffer;
@@ -288,8 +308,15 @@ void RTReflections::process(Ref<RenderSceneBuffersRD> p_render_buffers, RTDenois
 	RD::Uniform u_averages(RD::UNIFORM_TYPE_STORAGE_BUFFER, 12, averages_buffer);
 
 	RD::ComputeListID compute_list = RD::get_singleton()->compute_list_begin();
-	RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, pipeline);
-	RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(compute_shader, 0, u_depth, u_normal, u_tlas, u_instances, u_materials, u_omni, u_spot, u_directional, u_last_frame, u_dest, u_hit, u_params, u_averages), 0);
+	if (half) {
+		RD::Uniform u_guide_depth(RD::UNIFORM_TYPE_IMAGE, 13, guide_depth);
+		RD::Uniform u_guide_normal(RD::UNIFORM_TYPE_IMAGE, 14, guide_normal_roughness);
+		RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, pipeline_half);
+		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(compute_shader, 0, u_depth, u_normal, u_tlas, u_instances, u_materials, u_omni, u_spot, u_directional, u_last_frame, u_dest, u_hit, u_params, u_averages, u_guide_depth, u_guide_normal), 0);
+	} else {
+		RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, pipeline);
+		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(compute_shader, 0, u_depth, u_normal, u_tlas, u_instances, u_materials, u_omni, u_spot, u_directional, u_last_frame, u_dest, u_hit, u_params, u_averages), 0);
+	}
 	RD::get_singleton()->compute_list_dispatch_threads(compute_list, size.x, size.y, 1);
 	RD::get_singleton()->compute_list_end();
 
@@ -299,10 +326,21 @@ void RTReflections::process(Ref<RenderSceneBuffersRD> p_render_buffers, RTDenois
 		RTDenoiser::Settings denoise_settings;
 		denoise_settings.max_history = 16.0;
 		denoise_settings.max_history_dynamic = 4.0;
-		denoiser.denoise_color(p_render_buffers, RB_SCOPE_RT_REFLECTIONS_DENOISE, r_history, raw, hit_distance, p_destination, p_depth, p_normal_roughness, p_projection, p_cam_transform, p_frame, denoise_settings);
+		if (half) {
+			denoiser.denoise_color(p_render_buffers, RB_SCOPE_RT_REFLECTIONS_DENOISE, r_history, raw, hit_distance, filtered, guide_depth, guide_normal_roughness, size, p_projection, p_cam_transform, p_frame, denoise_settings);
+		} else {
+			denoiser.denoise_color(p_render_buffers, RB_SCOPE_RT_REFLECTIONS_DENOISE, r_history, raw, hit_distance, p_destination, p_depth, p_normal_roughness, size, p_projection, p_cam_transform, p_frame, denoise_settings);
+		}
 		RD::get_singleton()->draw_command_end_label();
 	} else {
 		p_render_buffers->clear_context(RB_SCOPE_RT_REFLECTIONS_DENOISE);
 		r_history = RTDenoiser::History();
+	}
+
+	if (half) {
+		RENDER_TIMESTAMP("Upsample Ray Traced Reflections");
+		RD::get_singleton()->draw_command_begin_label("Upsample Ray Traced Reflections");
+		denoiser.upsample_color(p_render_buffers, filtered, guide_depth, guide_normal_roughness, p_destination, p_depth, p_normal_roughness, p_projection);
+		RD::get_singleton()->draw_command_end_label();
 	}
 }
