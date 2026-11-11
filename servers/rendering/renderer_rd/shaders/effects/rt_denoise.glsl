@@ -13,7 +13,9 @@
 // normal; it filters fully where the history is short and fades out where the history is long.
 // SIGNAL_COLOR: the same for an RGBA signal (such as reflections, premultiplied), with the history length in its own
 // texture and both passes scaled by the surface roughness: a mirror keeps one frame and no blur, rough surfaces get
-// the full history and kernel.
+// the full history and kernel. A reflection moves with the reflected point, not with the surface, so on smooth
+// surfaces the history is looked up where the reflected (virtual) point was last frame, found from the reflected
+// ray's length; the lookup moves back to the surface point as roughness blurs the reflection.
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -29,6 +31,7 @@ layout(set = 0, binding = 0, std140) uniform Params {
 	float clamp_sigma;
 	float pad0;
 	float pad1;
+	mat4 prev_inv_projection; // SIGNAL_COLOR only: last frame, clip to view.
 }
 params;
 
@@ -223,6 +226,12 @@ float roughness_weight(float p_roughness) {
 	return smoothstep(0.04, 0.3, p_roughness);
 }
 
+// How far towards the reflected point the history is reprojected (1 for a sharp reflection, 0 once the roughness
+// blurs it so much that it follows the surface).
+float virtual_weight(float p_roughness) {
+	return 1.0 - smoothstep(0.25, 0.55, p_roughness);
+}
+
 #endif
 
 #if defined(MODE_TEMPORAL) && defined(SIGNAL_COLOR)
@@ -234,6 +243,23 @@ layout(rgba16f, set = 2, binding = 3) uniform restrict writeonly image2D dest_si
 layout(rgba16f, set = 2, binding = 4) uniform restrict writeonly image2D dest_guide;
 layout(set = 2, binding = 5) uniform sampler2D history_length;
 layout(r16f, set = 2, binding = 6) uniform restrict writeonly image2D dest_length;
+layout(set = 2, binding = 7) uniform sampler2D source_hit_distance; // Reflected ray length, 0 for no hit.
+
+// Linear depth in last frame's view at which the ray through p_prev_uv meets the plane through p_point with normal
+// p_normal (both in last frame's view space); negative if it does not.
+float prev_plane_depth(vec2 p_prev_uv, vec3 p_point, vec3 p_normal) {
+	vec2 ndc = p_prev_uv * 2.0 - 1.0;
+	vec4 a4 = params.prev_inv_projection * vec4(ndc, 1.0, 1.0);
+	vec4 b4 = params.prev_inv_projection * vec4(ndc, 0.5, 1.0);
+	vec3 a = a4.xyz / a4.w;
+	vec3 d = b4.xyz / b4.w - a;
+	float denom = dot(p_normal, d);
+	float depth = -1.0;
+	if (abs(denom) > 1e-6 * length(d)) {
+		depth = -(a.z + d.z * (dot(p_normal, p_point - a) / denom));
+	}
+	return depth;
+}
 
 void main() {
 	ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
@@ -252,10 +278,12 @@ void main() {
 
 	vec4 normal_roughness = texelFetch(source_normal_roughness, pixel, 0);
 	bool dynamic = normal_roughness.w > 0.5;
-	float rw = roughness_weight(decode_roughness(normal_roughness.w));
+	float roughness = decode_roughness(normal_roughness.w);
+	float rw = roughness_weight(roughness);
 	vec3 view_pos = view_position(pixel, depth);
 	float linear_depth = -view_pos.z;
-	vec3 normal = normalize(mat3(params.view_to_world) * normalize(normal_roughness.xyz * 2.0 - 1.0));
+	vec3 view_normal = normalize(normal_roughness.xyz * 2.0 - 1.0);
+	vec3 normal = normalize(mat3(params.view_to_world) * view_normal);
 
 	// Neighborhood statistics of this frame's samples, on the same surface only.
 	float sum_w = 0.0;
@@ -280,14 +308,46 @@ void main() {
 	float effective_n = sum_w * sum_w / max(sum_w2, 1.0);
 	vec4 sigma_mean = sqrt(variance / max(effective_n, 1.0));
 
-	vec3 prev_view = (params.reprojection * vec4(view_pos, 1.0)).xyz;
+	// Reproject the reflected point: the surface point pushed along the view ray by the reflected ray's length (the
+	// mean over the 3x3 neighbors on the same surface that hit something), blended back to the surface point as the
+	// roughness rises. Its history pixel shows another point of the same surface, so the depth test expects where last
+	// frame's view ray through it meets this pixel's surface plane.
+	vec3 reproject_pos = view_pos;
+	bool reflected = false;
+	float vw = virtual_weight(roughness);
+	if (params.history_valid != 0u && rw > 0.0 && vw > 0.0) {
+		float hit_sum = 0.0;
+		float hit_count = 0.0;
+		for (int y = -1; y <= 1; y++) {
+			for (int x = -1; x <= 1; x++) {
+				ivec2 q = clamp(pixel + ivec2(x, y), ivec2(0), params.screen_size - 1);
+				float q_depth = texelFetch(source_depth, q, 0).r;
+				float q_hit = texelFetch(source_hit_distance, q, 0).r;
+				if (q_hit > 0.0 && q_depth != 0.0 && abs(-view_position(q, q_depth).z - linear_depth) < 0.05 * linear_depth) {
+					hit_sum += q_hit;
+					hit_count += 1.0;
+				}
+			}
+		}
+		if (hit_count > 0.0) {
+			vec3 view_dir = normalize(view_pos - view_position(pixel, 1.0)); // Also right for orthogonal projections.
+			reproject_pos = view_pos + view_dir * (hit_sum / hit_count) * vw;
+			reflected = true;
+		}
+	}
+
+	vec3 prev_view = (params.reprojection * vec4(reproject_pos, 1.0)).xyz;
 	vec4 prev_clip = params.prev_projection * vec4(prev_view, 1.0);
 	vec2 prev_uv = (prev_clip.xy / prev_clip.w) * 0.5 + 0.5;
 	float prev_linear = -prev_view.z;
+	if (reflected) {
+		vec3 prev_surface = (params.reprojection * vec4(view_pos, 1.0)).xyz;
+		prev_linear = prev_plane_depth(prev_uv, prev_surface, mat3(params.reprojection) * view_normal);
+	}
 
 	vec4 history = vec4(0.0);
 	float length_in = 0.0;
-	if (params.history_valid != 0u && rw > 0.0 && all(greaterThanEqual(prev_uv, vec2(0.0))) && all(lessThan(prev_uv, vec2(1.0)))) {
+	if (params.history_valid != 0u && rw > 0.0 && (!reflected || (prev_clip.w > 0.0 && prev_linear > 0.0)) && all(greaterThanEqual(prev_uv, vec2(0.0))) && all(lessThan(prev_uv, vec2(1.0)))) {
 		vec2 texel = prev_uv * vec2(params.screen_size) - 0.5;
 		ivec2 base = ivec2(floor(texel));
 		vec2 f = texel - vec2(base);

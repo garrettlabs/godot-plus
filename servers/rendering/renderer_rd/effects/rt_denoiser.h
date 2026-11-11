@@ -71,6 +71,7 @@ private:
 		float max_history_dynamic;
 		float clamp_sigma;
 		float pad[2];
+		float prev_inv_projection[16]; // Color signal only.
 	};
 	static_assert(sizeof(Params) % 16 == 0);
 
@@ -105,8 +106,10 @@ public:
 	RID denoise(Ref<RenderSceneBuffersRD> p_render_buffers, const StringName &p_context, History &r_history, RID p_signal, RID p_depth, RID p_normal_roughness, const Projection &p_projection, const Transform3D &p_cam_transform, uint64_t p_frame, const Settings &p_settings);
 
 	// Denoises p_signal (RGBA16F, sampled) into p_destination (RGBA16F, storage). A pixel's history length and blur
-	// grow with its roughness: a mirror keeps the current frame, unblurred.
-	void denoise_color(Ref<RenderSceneBuffersRD> p_render_buffers, const StringName &p_context, History &r_history, RID p_signal, RID p_destination, RID p_depth, RID p_normal_roughness, const Projection &p_projection, const Transform3D &p_cam_transform, uint64_t p_frame, const Settings &p_settings);
+	// grow with its roughness: a mirror keeps the current frame, unblurred. p_hit_distance (R16F, sampled; 0 for no
+	// hit) is the length of each pixel's reflected ray: on smooth surfaces the history is reprojected from where the
+	// reflected point appeared last frame instead of where the surface was.
+	void denoise_color(Ref<RenderSceneBuffersRD> p_render_buffers, const StringName &p_context, History &r_history, RID p_signal, RID p_hit_distance, RID p_destination, RID p_depth, RID p_normal_roughness, const Projection &p_projection, const Transform3D &p_cam_transform, uint64_t p_frame, const Settings &p_settings);
 };
 
 } // namespace RendererRD

@@ -299,7 +299,7 @@ void RTReflections::process(Ref<RenderSceneBuffersRD> p_render_buffers, RTDenois
 		RTDenoiser::Settings denoise_settings;
 		denoise_settings.max_history = 16.0;
 		denoise_settings.max_history_dynamic = 4.0;
-		denoiser.denoise_color(p_render_buffers, RB_SCOPE_RT_REFLECTIONS_DENOISE, r_history, raw, p_destination, p_depth, p_normal_roughness, p_projection, p_cam_transform, p_frame, denoise_settings);
+		denoiser.denoise_color(p_render_buffers, RB_SCOPE_RT_REFLECTIONS_DENOISE, r_history, raw, hit_distance, p_destination, p_depth, p_normal_roughness, p_projection, p_cam_transform, p_frame, denoise_settings);
 		RD::get_singleton()->draw_command_end_label();
 	} else {
 		p_render_buffers->clear_context(RB_SCOPE_RT_REFLECTIONS_DENOISE);

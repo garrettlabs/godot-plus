@@ -173,6 +173,7 @@ void RTDenoiser::_update_params(RID p_buffer, const Size2i &p_size, bool p_histo
 	MaterialStorage::store_transform(p_cam_transform, params.view_to_world);
 	MaterialStorage::store_transform(p_history.prev_cam_transform.affine_inverse() * p_cam_transform, params.reprojection);
 	MaterialStorage::store_camera(p_history.prev_projection, params.prev_projection);
+	MaterialStorage::store_camera(p_history.prev_projection.inverse(), params.prev_inv_projection);
 	params.screen_size[0] = p_size.x;
 	params.screen_size[1] = p_size.y;
 	params.history_valid = p_history_valid ? 1 : 0;
@@ -182,7 +183,7 @@ void RTDenoiser::_update_params(RID p_buffer, const Size2i &p_size, bool p_histo
 	RD::get_singleton()->buffer_update(p_buffer, 0, sizeof(Params), &params);
 }
 
-void RTDenoiser::denoise_color(Ref<RenderSceneBuffersRD> p_render_buffers, const StringName &p_context, History &r_history, RID p_signal, RID p_destination, RID p_depth, RID p_normal_roughness, const Projection &p_projection, const Transform3D &p_cam_transform, uint64_t p_frame, const Settings &p_settings) {
+void RTDenoiser::denoise_color(Ref<RenderSceneBuffersRD> p_render_buffers, const StringName &p_context, History &r_history, RID p_signal, RID p_hit_distance, RID p_destination, RID p_depth, RID p_normal_roughness, const Projection &p_projection, const Transform3D &p_cam_transform, uint64_t p_frame, const Settings &p_settings) {
 	UniformSetCacheRD *uniform_set_cache = UniformSetCacheRD::get_singleton();
 	MaterialStorage *material_storage = MaterialStorage::get_singleton();
 
@@ -240,7 +241,8 @@ void RTDenoiser::denoise_color(Ref<RenderSceneBuffersRD> p_render_buffers, const
 		RD::Uniform u_dest_guide(RD::UNIFORM_TYPE_IMAGE, 4, guide_cur);
 		RD::Uniform u_length(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 5, Vector<RID>({ nearest, length_prev }));
 		RD::Uniform u_dest_length(RD::UNIFORM_TYPE_IMAGE, 6, length_cur);
-		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(shader_rid, 2, u_signal, u_history, u_guide, u_dest, u_dest_guide, u_length, u_dest_length), 2);
+		RD::Uniform u_hit_distance(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 7, Vector<RID>({ nearest, p_hit_distance }));
+		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(shader_rid, 2, u_signal, u_history, u_guide, u_dest, u_dest_guide, u_length, u_dest_length, u_hit_distance), 2);
 		PushConstant push = {};
 		RD::get_singleton()->compute_list_set_push_constant(compute_list, &push, sizeof(PushConstant));
 		RD::get_singleton()->compute_list_dispatch_threads(compute_list, size.x, size.y, 1);
