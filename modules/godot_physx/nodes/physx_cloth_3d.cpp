@@ -60,6 +60,7 @@ void PhysXCloth3D::_apply_solver_settings() {
 }
 
 void PhysXCloth3D::_rebuild() {
+	_set_sleeping(false);
 	_destroy();
 
 	_apply_solver_settings();
@@ -163,6 +164,13 @@ bool PhysXCloth3D::_try_build_gpu() {
 
 void PhysXCloth3D::_destroy() {
 	built = false;
+	sleeping = false;
+	still_time = 0.0f;
+	bodies_near = false;
+	moving_bodies_near = false;
+	touched_moving_body = false;
+	near_moving.clear();
+	sleep_bodies.clear();
 	if (gpu_cloth.is_valid()) {
 		GodotPhysXServer3D *server = GodotPhysXServer3D::get_singleton();
 		if (server) {
@@ -178,6 +186,10 @@ void PhysXCloth3D::_destroy() {
 	if (collision_sphere.is_valid()) {
 		PhysicsServer3D::get_singleton()->free_rid(collision_sphere);
 		collision_sphere = RID();
+	}
+	if (bounds_box.is_valid()) {
+		PhysicsServer3D::get_singleton()->free_rid(bounds_box);
+		bounds_box = RID();
 	}
 	solver.clear();
 	pinned_index_cache.clear();
@@ -338,16 +350,57 @@ void PhysXCloth3D::_step(double p_delta) {
 	}
 
 	// --- CPU path ---
+	// While asleep the pins are not moved: the anchor's motion since the cloth fell asleep accumulates against
+	// last_anchor_xform, and once it moves a pinned vertex by more than a millimeter the cloth wakes and follows.
+	bool anchor_moving = false;
 	Node3D *anchor = Object::cast_to<Node3D>(get_node_or_null(anchor_path));
 	if (anchor && !pinned_index_cache.is_empty()) {
 		const Transform3D now = anchor->get_global_transform();
 		const Transform3D delta = now * last_anchor_xform.affine_inverse();
 		LocalVector<Vector3> &pos = solver.positions_mut();
-		for (uint32_t i = 0; i < pinned_index_cache.size(); i++) {
-			const int v = pinned_index_cache[i];
-			solver.set_pin_target(v, delta.xform(pos[v]));
+		if (sleeping || can_sleep) {
+			float shift_sq = 0.0f;
+			for (uint32_t i = 0; i < pinned_index_cache.size(); i++) {
+				const int v = pinned_index_cache[i];
+				shift_sq = MAX(shift_sq, delta.xform(pos[v]).distance_squared_to(pos[v]));
+			}
+			if (sleeping && shift_sq > 1.0e-6f) {
+				_set_sleeping(false);
+			}
+			const float still_shift = sleep_speed_threshold * (float)p_delta;
+			anchor_moving = shift_sq > still_shift * still_shift;
 		}
-		last_anchor_xform = now;
+		if (!sleeping) {
+			for (uint32_t i = 0; i < pinned_index_cache.size(); i++) {
+				const int v = pinned_index_cache[i];
+				solver.set_pin_target(v, delta.xform(pos[v]));
+			}
+			last_anchor_xform = now;
+		}
+	}
+
+	if (sleeping) {
+		// Asleep: no solver step, no per-vertex queries, no mesh update. Wind, or a non-static body that entered
+		// (or moved inside) the cloth's bounds, wakes it; the only cost is the one bounds query.
+		bool wake_now = wind_now != Vector3() || solver.has_pending_velocity();
+		if (!wake_now && collision_enabled) {
+			_query_bounds(sleep_bounds);
+			for (uint32_t i = 0; i < near_moving.size() && !wake_now; i++) {
+				const NearBody &b = near_moving[i];
+				bool known = false;
+				for (uint32_t j = 0; j < sleep_bodies.size(); j++) {
+					if (sleep_bodies[j].rid == b.rid) {
+						known = b.xform.origin.distance_squared_to(sleep_bodies[j].xform.origin) < 1.0e-6f && b.xform.basis.is_equal_approx(sleep_bodies[j].xform.basis);
+						break;
+					}
+				}
+				wake_now = !known;
+			}
+		}
+		if (!wake_now) {
+			return;
+		}
+		_set_sleeping(false);
 	}
 
 	Vector3 gravity_vec = GLOBAL_GET("physics/3d/default_gravity_vector");
@@ -359,10 +412,237 @@ void PhysXCloth3D::_step(double p_delta) {
 
 	solver.step((float)p_delta, gravity, wind_now);
 
+	touched_moving_body = false;
 	if (collision_enabled) {
 		_collide();
+		if (!solver.contacts_mut().is_empty()) {
+			solver.relax(4, (float)p_delta);
+		}
+	} else {
+		bodies_near = false;
+		moving_bodies_near = false;
+		near_moving.clear();
+		solver.contacts_mut().clear();
 	}
 	_update_mesh();
+
+	// Sleep rule: for sleep_time, every unpinned vertex slower than the threshold, no vertex touching a
+	// non-static body, the anchor still and no wind.
+	if (can_sleep) {
+		bool still = !anchor_moving && !touched_moving_body && wind_now == Vector3() && !solver.has_pending_velocity();
+		if (still) {
+			const LocalVector<Vector3> &vel = solver.get_velocities();
+			const float limit_sq = sleep_speed_threshold * sleep_speed_threshold;
+			const int n = solver.vertex_count();
+			for (int i = 0; i < n; i++) {
+				if (!solver.is_pinned(i) && vel[i].length_squared() >= limit_sq) {
+					still = false;
+					break;
+				}
+			}
+		}
+		still_time = still ? still_time + (float)p_delta : 0.0f;
+		if (still && still_time >= sleep_time) {
+			_set_sleeping(true);
+		}
+	} else {
+		still_time = 0.0f;
+	}
+}
+
+float PhysXCloth3D::_collision_radius() const {
+	return thickness > 0.0f ? thickness : MAX(solver.vertex_radius(), 0.005f);
+}
+
+AABB PhysXCloth3D::_solver_bounds() const {
+	const LocalVector<Vector3> &pos = solver.get_positions();
+	if (pos.is_empty()) {
+		return AABB(get_global_transform().origin, Vector3());
+	}
+	AABB box(pos[0], Vector3());
+	for (uint32_t i = 1; i < pos.size(); i++) {
+		box.expand_to(pos[i]);
+	}
+	return box;
+}
+
+void PhysXCloth3D::_query_bounds(const AABB &p_bounds) {
+	bodies_near = false;
+	moving_bodies_near = false;
+	near_moving.clear();
+
+	Ref<World3D> world = get_world_3d();
+	if (world.is_null()) {
+		return;
+	}
+	PhysicsDirectSpaceState3D *ss = world->get_direct_space_state();
+	if (!ss) {
+		return;
+	}
+	PhysicsServer3D *ps = PhysicsServer3D::get_singleton();
+	if (bounds_box.is_null()) {
+		bounds_box = ps->box_shape_create();
+	}
+	const float grow = _collision_radius() + 0.05f;
+	ps->shape_set_data(bounds_box, p_bounds.size * 0.5f + Vector3(grow, grow, grow));
+
+	PS3DT::ShapeParameters params;
+	params.shape_rid = bounds_box;
+	params.transform = Transform3D(Basis(), p_bounds.get_center());
+	params.collision_mask = collision_mask;
+	params.collide_with_bodies = true;
+	params.collide_with_areas = false;
+
+	constexpr int MAX_RESULTS = 64;
+	PS3DT::ShapeResult results[MAX_RESULTS];
+	const int count = ss->intersect_shape(params, results, MAX_RESULTS);
+	bodies_near = count > 0;
+	for (int i = 0; i < count; i++) {
+		const RID rid = results[i].rid;
+		if (!rid.is_valid() || ps->body_get_mode(rid) == PS3DE::BODY_MODE_STATIC) {
+			continue;
+		}
+		bool seen = false;
+		for (uint32_t j = 0; j < near_moving.size(); j++) {
+			if (near_moving[j].rid == rid) {
+				seen = true;
+				break;
+			}
+		}
+		if (seen) {
+			continue; // one entry per body, not per shape
+		}
+		NearBody b;
+		b.rid = rid;
+		b.xform = ps->body_get_state(rid, PS3DE::BODY_STATE_TRANSFORM);
+		near_moving.push_back(b);
+	}
+	moving_bodies_near = !near_moving.is_empty();
+}
+
+void PhysXCloth3D::_set_sleeping(bool p_sleeping) {
+	still_time = 0.0f;
+	if (sleeping == p_sleeping) {
+		return;
+	}
+	sleeping = p_sleeping;
+	if (sleeping) {
+		LocalVector<Vector3> &vel = solver.velocities_mut();
+		for (uint32_t i = 0; i < vel.size(); i++) {
+			vel[i] = Vector3();
+		}
+		sleep_bounds = _solver_bounds();
+		sleep_bodies = near_moving;
+		solver.contacts_mut().clear();
+	} else {
+		sleep_bodies.clear();
+	}
+	emit_signal(SNAME("sleeping_state_changed"));
+}
+
+void PhysXCloth3D::_wake_on_change() {
+	if (sleeping) {
+		_set_sleeping(false);
+	} else {
+		still_time = 0.0f;
+	}
+}
+
+void PhysXCloth3D::wake() {
+	_wake_on_change();
+}
+
+void PhysXCloth3D::sleep() {
+	if (!built || gpu_cloth.is_valid()) {
+		return;
+	}
+	_set_sleeping(true);
+}
+
+void PhysXCloth3D::apply_impulse(const Vector3 &p_position, const Vector3 &p_impulse, float p_radius) {
+	if (!built) {
+		return;
+	}
+	if (gpu_cloth.is_valid()) {
+		WARN_PRINT_ONCE("PhysXCloth3D: impulses and forces only act on the CPU solver; ignored on the GPU path.");
+		return;
+	}
+	// Smooth falloff w = (1 - (d/r)^2)^2 inside the radius, scaled so the total momentum given equals the
+	// impulse: every vertex gets the velocity change dv * w, with dv = J / sum(w * m).
+	const LocalVector<Vector3> &pos = solver.get_positions();
+	const int n = solver.vertex_count();
+	const float r = MAX(p_radius, 0.001f);
+	const float r_sq = r * r;
+	float weighted_mass = 0.0f;
+	int nearest = -1;
+	float nearest_sq = 1.0e30f;
+	for (int i = 0; i < n; i++) {
+		const float im = solver.get_inv_mass(i);
+		if (im == 0.0f) {
+			continue;
+		}
+		const float d_sq = pos[i].distance_squared_to(p_position);
+		if (d_sq < nearest_sq) {
+			nearest_sq = d_sq;
+			nearest = i;
+		}
+		if (d_sq < r_sq) {
+			const float f = 1.0f - d_sq / r_sq;
+			weighted_mass += f * f / im;
+		}
+	}
+	if (nearest < 0) {
+		return; // everything is pinned
+	}
+	if (weighted_mass <= 0.0f) {
+		// No vertex inside the radius: the nearest one takes it all.
+		solver.add_velocity(nearest, p_impulse * solver.get_inv_mass(nearest));
+	} else {
+		const Vector3 dv = p_impulse / weighted_mass;
+		for (int i = 0; i < n; i++) {
+			if (solver.get_inv_mass(i) == 0.0f) {
+				continue;
+			}
+			const float d_sq = pos[i].distance_squared_to(p_position);
+			if (d_sq < r_sq) {
+				const float f = 1.0f - d_sq / r_sq;
+				solver.add_velocity(i, dv * (f * f));
+			}
+		}
+	}
+	_wake_on_change();
+}
+
+void PhysXCloth3D::apply_force(const Vector3 &p_position, const Vector3 &p_force, float p_radius) {
+	apply_impulse(p_position, p_force * (float)get_physics_process_delta_time(), p_radius);
+}
+
+void PhysXCloth3D::apply_central_impulse(const Vector3 &p_impulse) {
+	if (!built) {
+		return;
+	}
+	if (gpu_cloth.is_valid()) {
+		WARN_PRINT_ONCE("PhysXCloth3D: impulses and forces only act on the CPU solver; ignored on the GPU path.");
+		return;
+	}
+	const int n = solver.vertex_count();
+	float mass = 0.0f;
+	for (int i = 0; i < n; i++) {
+		const float im = solver.get_inv_mass(i);
+		if (im != 0.0f) {
+			mass += 1.0f / im;
+		}
+	}
+	if (mass <= 0.0f) {
+		return;
+	}
+	const Vector3 dv = p_impulse / mass;
+	for (int i = 0; i < n; i++) {
+		if (solver.get_inv_mass(i) != 0.0f) {
+			solver.add_velocity(i, dv);
+		}
+	}
+	_wake_on_change();
 }
 
 void PhysXCloth3D::_update_gpu_mesh() {
@@ -434,7 +714,16 @@ void PhysXCloth3D::_collide() {
 		return; // not available yet during world setup
 	}
 
-	const float radius = MAX(solver.vertex_radius(), 0.005f);
+	// One query over the whole cloth first: with no body in its bounds no vertex can touch anything, so the
+	// per-vertex pass is skipped.
+	LocalVector<XPBDClothSolver::ContactPlane> &contacts = solver.contacts_mut();
+	contacts.clear();
+	_query_bounds(_solver_bounds());
+	if (!bodies_near) {
+		return;
+	}
+
+	const float radius = _collision_radius();
 	if (collision_sphere.is_null()) {
 		collision_sphere = ps->sphere_shape_create();
 	}
@@ -449,6 +738,7 @@ void PhysXCloth3D::_collide() {
 	LocalVector<Vector3> &pos = solver.positions_mut();
 	LocalVector<Vector3> &vel = solver.velocities_mut();
 	const int n = solver.vertex_count();
+	const bool physx_contract = GodotPhysXServer3D::get_singleton() != nullptr; // only exists when PhysX is the engine
 	for (int i = 0; i < n; i++) {
 		if (solver.is_pinned(i)) {
 			continue;
@@ -458,17 +748,51 @@ void PhysXCloth3D::_collide() {
 		if (!ss->rest_info(params, &info)) {
 			continue;
 		}
-		// The PhysX backend reports info.normal as the direction to push the query
-		// shape out and info.point as (center - normal * penetration), so the
-		// penetration depth is just the projection back onto the normal.
+		// info.normal is the direction to push the query shape out with both backends. The PhysX backend reports
+		// info.point as (center - normal * penetration), so the projection back onto the normal is the depth;
+		// other backends (Jolt) report the contact point on the collider's surface, where the depth is the radius
+		// minus the center's distance from that point along the normal.
 		const Vector3 push_dir = info.normal;
-		const float depth = (pos[i] - info.point).dot(push_dir);
+		const float along = (pos[i] - info.point).dot(push_dir);
+		const float depth = physx_contract ? along : radius - along;
 		if (depth > 0.0f) {
+			bool moving = false;
+			if (moving_bodies_near) {
+				for (uint32_t j = 0; j < near_moving.size(); j++) {
+					if (near_moving[j].rid == info.rid) {
+						moving = true;
+						break;
+					}
+				}
+			}
 			pos[i] += push_dir * (depth + 0.001f);
+			XPBDClothSolver::ContactPlane plane;
+			plane.vertex = i;
+			plane.point = pos[i];
+			plane.normal = push_dir;
 			const float vn = vel[i].dot(push_dir);
 			Vector3 v_tangent = vel[i] - push_dir * vn;
-			v_tangent *= (1.0f - friction); // Coulomb-style sliding friction
-			vel[i] = v_tangent + push_dir * MAX(vn, 0.0f); // no inward velocity
+			if (!moving) {
+				contacts.push_back(plane);
+				v_tangent *= (1.0f - friction); // Coulomb-style sliding friction
+				vel[i] = v_tangent + push_dir * MAX(vn, 0.0f); // no inward velocity
+				continue;
+			}
+			// A moving body carries the vertex: its normal velocity becomes at least the body's at the contact (so
+			// the next step does not move it back inside), and friction pulls its sliding velocity toward the
+			// body's surface velocity. The cloth never pushes the body back.
+			touched_moving_body = true;
+			Vector3 body_v = info.linear_velocity;
+			PhysicsDirectBodyState3D *bs = ps->body_get_direct_state(info.rid);
+			if (bs) {
+				body_v = bs->get_velocity_at_local_position(info.point - bs->get_transform().origin);
+			}
+			const float body_vn = body_v.dot(push_dir);
+			const Vector3 body_vt = body_v - push_dir * body_vn;
+			plane.velocity = push_dir * body_vn;
+			contacts.push_back(plane);
+			v_tangent = body_vt + (v_tangent - body_vt) * (1.0f - friction);
+			vel[i] = v_tangent + push_dir * MAX(vn, body_vn);
 		}
 	}
 }
@@ -548,6 +872,7 @@ void PhysXCloth3D::reset() {
 	if (!built) {
 		return;
 	}
+	_wake_on_change();
 	_resolve_pins();
 	solver.reset(get_global_transform());
 	last_anchor_xform = Transform3D();
@@ -656,26 +981,31 @@ void PhysXCloth3D::set_grid_size(const Vector2 &p_v) {
 void PhysXCloth3D::set_substeps(int p_v) {
 	substeps = CLAMP(p_v, 1, 40);
 	_apply_solver_settings();
+	_wake_on_change();
 }
 
 void PhysXCloth3D::set_stiffness(float p_v) {
 	stiffness = CLAMP(p_v, 0.0f, 1.0f);
 	_apply_solver_settings();
+	_wake_on_change();
 }
 
 void PhysXCloth3D::set_shear_stiffness(float p_v) {
 	shear_stiffness = CLAMP(p_v, 0.0f, 1.0f);
 	_apply_solver_settings();
+	_wake_on_change();
 }
 
 void PhysXCloth3D::set_bend_stiffness(float p_v) {
 	bend_stiffness = CLAMP(p_v, 0.0f, 1.0f);
 	_apply_solver_settings();
+	_wake_on_change();
 }
 
 void PhysXCloth3D::set_damping(float p_v) {
 	damping = MAX(p_v, 0.0f);
 	_apply_solver_settings();
+	_wake_on_change();
 }
 
 void PhysXCloth3D::set_density(float p_v) {
@@ -687,34 +1017,41 @@ void PhysXCloth3D::set_density(float p_v) {
 
 void PhysXCloth3D::set_wind_enabled(bool p_v) {
 	wind_enabled = p_v;
+	_wake_on_change();
 }
 
 void PhysXCloth3D::set_wind_area(const NodePath &p_v) {
 	wind_area = p_v;
+	_wake_on_change();
 	update_gizmos();
 }
 
 void PhysXCloth3D::set_wind(const Vector3 &p_v) {
 	wind = p_v;
+	_wake_on_change();
 	update_gizmos();
 }
 
 void PhysXCloth3D::set_wind_turbulence(float p_v) {
 	wind_turbulence = MAX(p_v, 0.0f);
+	_wake_on_change();
 }
 
 void PhysXCloth3D::set_drag(float p_v) {
 	drag = MAX(p_v, 0.0f);
 	_apply_solver_settings();
+	_wake_on_change();
 }
 
 void PhysXCloth3D::set_lift(float p_v) {
 	lift = MAX(p_v, 0.0f);
 	_apply_solver_settings();
+	_wake_on_change();
 }
 
 void PhysXCloth3D::set_pin_mode(PinMode p_v) {
 	pin_mode = p_v;
+	_wake_on_change();
 	if (built) {
 		_resolve_pins();
 		solver.reset(get_global_transform());
@@ -726,6 +1063,7 @@ void PhysXCloth3D::set_pin_mode(PinMode p_v) {
 
 void PhysXCloth3D::set_pinned_vertices(const PackedInt32Array &p_v) {
 	pinned_vertices = p_v;
+	_wake_on_change();
 	if (built) {
 		_resolve_pins();
 		solver.reset(get_global_transform());
@@ -745,18 +1083,42 @@ void PhysXCloth3D::set_anchor_path(const NodePath &p_v) {
 
 void PhysXCloth3D::set_collision_enabled(bool p_v) {
 	collision_enabled = p_v;
+	_wake_on_change();
 }
 
 void PhysXCloth3D::set_collision_mask(uint32_t p_v) {
 	collision_mask = p_v;
+	_wake_on_change();
 }
 
 void PhysXCloth3D::set_friction(float p_v) {
 	friction = CLAMP(p_v, 0.0f, 1.0f);
+	_wake_on_change();
+}
+
+void PhysXCloth3D::set_thickness(float p_v) {
+	thickness = CLAMP(p_v, 0.0f, 0.2f);
+	_wake_on_change();
 }
 
 void PhysXCloth3D::set_simulating(bool p_v) {
 	simulating = p_v;
+	_wake_on_change();
+}
+
+void PhysXCloth3D::set_can_sleep(bool p_v) {
+	can_sleep = p_v;
+	if (!can_sleep) {
+		_wake_on_change();
+	}
+}
+
+void PhysXCloth3D::set_sleep_speed_threshold(float p_v) {
+	sleep_speed_threshold = MAX(p_v, 0.0f);
+}
+
+void PhysXCloth3D::set_sleep_time(float p_v) {
+	sleep_time = MAX(p_v, 0.0f);
 }
 
 void PhysXCloth3D::_bind_methods() {
@@ -816,8 +1178,24 @@ void PhysXCloth3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_friction", "friction"), &PhysXCloth3D::set_friction);
 	ClassDB::bind_method(D_METHOD("get_friction"), &PhysXCloth3D::get_friction);
 
+	ClassDB::bind_method(D_METHOD("set_thickness", "thickness"), &PhysXCloth3D::set_thickness);
+	ClassDB::bind_method(D_METHOD("get_thickness"), &PhysXCloth3D::get_thickness);
+
 	ClassDB::bind_method(D_METHOD("set_simulating", "simulating"), &PhysXCloth3D::set_simulating);
 	ClassDB::bind_method(D_METHOD("is_simulating"), &PhysXCloth3D::is_simulating);
+
+	ClassDB::bind_method(D_METHOD("set_can_sleep", "enabled"), &PhysXCloth3D::set_can_sleep);
+	ClassDB::bind_method(D_METHOD("get_can_sleep"), &PhysXCloth3D::get_can_sleep);
+	ClassDB::bind_method(D_METHOD("set_sleep_speed_threshold", "threshold"), &PhysXCloth3D::set_sleep_speed_threshold);
+	ClassDB::bind_method(D_METHOD("get_sleep_speed_threshold"), &PhysXCloth3D::get_sleep_speed_threshold);
+	ClassDB::bind_method(D_METHOD("set_sleep_time", "time"), &PhysXCloth3D::set_sleep_time);
+	ClassDB::bind_method(D_METHOD("get_sleep_time"), &PhysXCloth3D::get_sleep_time);
+	ClassDB::bind_method(D_METHOD("is_sleeping"), &PhysXCloth3D::is_sleeping);
+	ClassDB::bind_method(D_METHOD("wake"), &PhysXCloth3D::wake);
+	ClassDB::bind_method(D_METHOD("sleep"), &PhysXCloth3D::sleep);
+	ClassDB::bind_method(D_METHOD("apply_impulse", "position", "impulse", "radius"), &PhysXCloth3D::apply_impulse, DEFVAL(0.1));
+	ClassDB::bind_method(D_METHOD("apply_force", "position", "force", "radius"), &PhysXCloth3D::apply_force, DEFVAL(0.1));
+	ClassDB::bind_method(D_METHOD("apply_central_impulse", "impulse"), &PhysXCloth3D::apply_central_impulse);
 
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "simulation_mode", PROPERTY_HINT_ENUM, "Auto,GPU,CPU"), "set_simulation_mode", "get_simulation_mode");
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "source_mesh", PROPERTY_HINT_RESOURCE_TYPE, "Mesh"), "set_source_mesh", "get_source_mesh");
@@ -833,6 +1211,10 @@ void PhysXCloth3D::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "bend_stiffness", PROPERTY_HINT_RANGE, "0,1,0.001"), "set_bend_stiffness", "get_bend_stiffness");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "damping", PROPERTY_HINT_RANGE, "0,1,0.001,or_greater"), "set_damping", "get_damping");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "density", PROPERTY_HINT_RANGE, "0.001,5,0.001,or_greater,suffix:kg/m²"), "set_density", "get_density");
+	ADD_GROUP("Sleep", "");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "can_sleep"), "set_can_sleep", "get_can_sleep");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "sleep_speed_threshold", PROPERTY_HINT_RANGE, "0,1,0.001,or_greater,suffix:m/s"), "set_sleep_speed_threshold", "get_sleep_speed_threshold");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "sleep_time", PROPERTY_HINT_RANGE, "0,5,0.01,or_greater,suffix:s"), "set_sleep_time", "get_sleep_time");
 	ADD_GROUP("Wind", "wind_");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "wind_enabled"), "set_wind_enabled", "is_wind_enabled");
 	ADD_PROPERTY(PropertyInfo(Variant::NODE_PATH, "wind_area", PROPERTY_HINT_NODE_PATH_VALID_TYPES, "Area3D"), "set_wind_area", "get_wind_area");
@@ -848,6 +1230,10 @@ void PhysXCloth3D::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "collision_enabled"), "set_collision_enabled", "is_collision_enabled");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "collision_mask", PROPERTY_HINT_LAYERS_3D_PHYSICS), "set_collision_mask", "get_collision_mask");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "collision_friction", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_friction", "get_friction");
+	ADD_GROUP("", "");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "thickness", PROPERTY_HINT_RANGE, "0,0.2,0.001,suffix:m"), "set_thickness", "get_thickness");
+
+	ADD_SIGNAL(MethodInfo("sleeping_state_changed"));
 
 	BIND_ENUM_CONSTANT(PIN_NONE);
 	BIND_ENUM_CONSTANT(PIN_TOP_EDGE);

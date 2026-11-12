@@ -6,10 +6,37 @@
 	<description>
 		Simulates a rectangular grid (or a supplied triangle mesh) as cloth and draws the result as an [ArrayMesh]. The simulation runs on a built-in extended position-based-dynamics (XPBD) solver on the CPU, so it works on any platform; the GPU deformable-surface path is used when the PhysX backend has GPU support available.
 		The cloth collides with the rest of the physics world through [PhysicsDirectSpaceState3D] queries (independent of which 3D physics engine is active) and reacts to the wind of an [Area3D] assigned to [member wind_area]. Fix parts of the cloth in place with [member pin_mode], [member pinned_vertices] or a moving [member anchor_path].
+		On the CPU solver a cloth that has come to rest falls asleep (see [member can_sleep]): it is no longer stepped, queried or redrawn until something disturbs it. The cloth is pushed by bodies but never pushes them back.
 	</description>
 	<tutorials>
 	</tutorials>
 	<methods>
+		<method name="apply_central_impulse">
+			<return type="void" />
+			<param index="0" name="impulse" type="Vector3" />
+			<description>
+				Gives every unpinned vertex the same velocity change, [param impulse] (in kg·m/s) divided by the mass of the unpinned vertices, at the start of the next physics tick. Wakes the cloth. Ignored, with a warning, on the GPU path.
+			</description>
+		</method>
+		<method name="apply_force">
+			<return type="void" />
+			<param index="0" name="position" type="Vector3" />
+			<param index="1" name="force" type="Vector3" />
+			<param index="2" name="radius" type="float" default="0.1" />
+			<description>
+				Applies [param force] (in newtons) at the world point [param position] for the next physics tick: the same as [method apply_impulse] with [param force] times the physics tick length. Call it every tick for a steady force. Wakes the cloth. Ignored, with a warning, on the GPU path.
+			</description>
+		</method>
+		<method name="apply_impulse">
+			<return type="void" />
+			<param index="0" name="position" type="Vector3" />
+			<param index="1" name="impulse" type="Vector3" />
+			<param index="2" name="radius" type="float" default="0.1" />
+			<description>
+				Applies [param impulse] (in kg·m/s) at the world point [param position], spread over the unpinned vertices within [param radius] meters with a smooth falloff, so that the momentum given to them adds up to [param impulse]. When no vertex is that close, the nearest unpinned vertex takes it all. The velocity change lands at the start of the next physics tick, so a call from [method Node._physics_process] or a signal handler acts on the coming tick. Wakes the cloth. Ignored, with a warning, on the GPU path.
+				Use it for what the cloth cannot see by itself, such as a projectile that passes through it between two ticks. The cloth is light (its mass is [member density] times its area), so a small impulse moves it a long way.
+			</description>
+		</method>
 		<method name="get_pinned_positions" qualifiers="const">
 			<return type="PackedVector3Array" />
 			<description>
@@ -28,10 +55,28 @@
 				Returns [code]true[/code] when the GPU deformable-surface path is in use rather than the CPU XPBD fallback.
 			</description>
 		</method>
+		<method name="is_sleeping" qualifiers="const">
+			<return type="bool" />
+			<description>
+				Returns [code]true[/code] while the cloth is asleep (see [member can_sleep]). Always [code]false[/code] on the GPU path.
+			</description>
+		</method>
 		<method name="reset">
 			<return type="void" />
 			<description>
-				Drops the cloth back to its rest shape at the node's current transform.
+				Drops the cloth back to its rest shape at the node's current transform. Wakes the cloth.
+			</description>
+		</method>
+		<method name="sleep">
+			<return type="void" />
+			<description>
+				Puts the cloth to sleep now, with its vertices at rest where they are, whether or not it meets the rule described in [member can_sleep]. It wakes on the usual triggers. Does nothing on the GPU path.
+			</description>
+		</method>
+		<method name="wake">
+			<return type="void" />
+			<description>
+				Wakes the cloth if it is asleep, and restarts the [member sleep_time] countdown if it is awake.
 			</description>
 		</method>
 	</methods>
@@ -42,8 +87,12 @@
 		<member name="bend_stiffness" type="float" setter="set_bend_stiffness" getter="get_bend_stiffness" default="0.1">
 			Resistance to folding, from 0 (limp) to 1 (stiff). Low values give soft, drapey cloth.
 		</member>
+		<member name="can_sleep" type="bool" setter="set_can_sleep" getter="get_can_sleep" default="true">
+			If [code]true[/code], the cloth falls asleep once, for [member sleep_time] seconds, every unpinned vertex has moved slower than [member sleep_speed_threshold], no vertex has touched a body that is not static, the [member anchor_path] node has not moved and the wind is zero. A sleeping cloth is not simulated, not checked against the world vertex by vertex and its mesh is not updated; its only cost is one shape query over its bounds per physics tick. It wakes when [method wake], [method reset] or an impulse method is called, when its anchor moves a pinned vertex by more than a millimeter, when the wind becomes non-zero, when a property that changes how it moves is set, or when a body that is not static enters its bounds (grown by the collision radius and 5 cm) or moves inside them. A [StaticBody3D] in the bounds does not wake it; an [AnimatableBody3D], [CharacterBody3D] or [RigidBody3D] does.
+			A cloth in a non-zero wind never sleeps, even a steady one, because the wind keeps moving it. Only the CPU solver sleeps.
+		</member>
 		<member name="collision_enabled" type="bool" setter="set_collision_enabled" getter="is_collision_enabled" default="true">
-			When enabled, each vertex is pushed out of any physics body it overlaps each step.
+			When enabled, each vertex is pushed out of any physics body it overlaps each step. A vertex touching a body that is not static also takes on that body's velocity at the contact along the contact normal (at least), and [member collision_friction] pulls its sliding velocity toward the body's, so a moving character or platform carries the cloth with it. The coupling is one-way: the cloth never pushes bodies. A body fast enough to pass through the cloth between two physics ticks is not seen; use [method apply_impulse] for those. One shape query over the cloth's bounds comes first; when no body is in them the per-vertex queries are skipped.
 		</member>
 		<member name="collision_friction" type="float" setter="set_friction" getter="get_friction" default="0.4">
 			Fraction of a vertex's sideways velocity removed while it is touching a surface, from 0 (frictionless) to 1. Higher values stop the cloth sliding and spinning once it settles.
@@ -87,6 +136,12 @@
 		<member name="simulation_mode" type="int" setter="set_simulation_mode" getter="get_simulation_mode" enum="PhysXCloth3D.SimulationMode" default="0">
 			Which solver runs the cloth. [constant SIM_AUTO] uses the GPU deformable surface when a CUDA device is available and the built-in CPU solver otherwise. The GPU option is hidden in the inspector on machines without CUDA; a scene saved with it still loads elsewhere and falls back to the CPU solver. See [method is_gpu_accelerated].
 		</member>
+		<member name="sleep_speed_threshold" type="float" setter="set_sleep_speed_threshold" getter="get_sleep_speed_threshold" default="0.02">
+			Speed in meters per second under which every unpinned vertex must stay for the cloth to fall asleep. See [member can_sleep].
+		</member>
+		<member name="sleep_time" type="float" setter="set_sleep_time" getter="get_sleep_time" default="0.5">
+			How long, in seconds, the cloth must meet the sleep rule before it falls asleep. See [member can_sleep].
+		</member>
 		<member name="source_mesh" type="Mesh" setter="set_source_mesh" getter="get_source_mesh">
 			A triangle mesh to simulate instead of a generated grid. Its first surface is used.
 		</member>
@@ -95,6 +150,9 @@
 		</member>
 		<member name="substeps" type="int" setter="set_substeps" getter="get_substeps" default="12">
 			Solver substeps per physics tick. More substeps make stiff cloth more stable at some CPU cost.
+		</member>
+		<member name="thickness" type="float" setter="set_thickness" getter="get_thickness" default="0.0">
+			Collision radius of each vertex in meters, which is also the distance the cloth keeps from bodies. A thicker cloth stands off walls and bodies and reads less like a film. [code]0[/code] keeps the automatic radius, half the shortest rest edge (at least 5 mm). Up to 0.2. Used by the CPU solver; the GPU path keeps its own.
 		</member>
 		<member name="wind" type="Vector3" setter="set_wind" getter="get_wind" default="Vector3(0, 0, 0)">
 			A constant world-space air velocity, added on top of any [member wind_area].
@@ -109,6 +167,13 @@
 			Adds a swirling gust on top of the steady wind, as a fraction of its speed.
 		</member>
 	</members>
+	<signals>
+		<signal name="sleeping_state_changed">
+			<description>
+				Emitted when the cloth falls asleep or wakes up. See [method is_sleeping].
+			</description>
+		</signal>
+	</signals>
 	<constants>
 		<constant name="PIN_NONE" value="0" enum="PinMode">
 			Nothing is pinned; the cloth falls freely.

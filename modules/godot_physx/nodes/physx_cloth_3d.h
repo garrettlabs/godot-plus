@@ -88,8 +88,26 @@ private:
 	bool collision_enabled = true;
 	uint32_t collision_mask = 1;
 	float friction = 0.4; // 0..1, tangential velocity bled off on contact
+	float thickness = 0.0; // collision radius in m; 0 = automatic (half the smallest rest edge, at least 5 mm)
 
 	bool simulating = true;
+
+	// Sleeping (CPU solver only).
+	bool can_sleep = true;
+	float sleep_speed_threshold = 0.02; // m/s
+	float sleep_time = 0.5; // s
+	bool sleeping = false;
+	float still_time = 0.0; // how long the cloth has met the sleep rule
+	AABB sleep_bounds; // world-space bounds of the cloth while asleep
+	bool bodies_near = false; // the last bounds query found a body (any mode)
+	bool moving_bodies_near = false; // ... and one of them is not static
+	bool touched_moving_body = false; // a vertex touched a non-static body this tick
+	struct NearBody {
+		RID rid;
+		Transform3D xform;
+	};
+	LocalVector<NearBody> near_moving; // non-static bodies found by the last bounds query
+	LocalVector<NearBody> sleep_bodies; // ... as they were when the cloth fell asleep
 
 	XPBDClothSolver solver; // CPU fallback
 	RID gpu_cloth; // GodotPhysXCloth3D RID when the GPU (PxDeformableSurface) path is in use
@@ -104,6 +122,7 @@ private:
 	PackedInt32Array render_indices;
 
 	RID collision_sphere; // PhysicsServer sphere shape reused for the collision pass
+	RID bounds_box; // PhysicsServer box shape for the per-tick bounds query
 
 	void _rebuild();
 	void _destroy();
@@ -112,6 +131,13 @@ private:
 	void _resolve_pins();
 	void _step(double p_delta);
 	void _collide();
+	// One shape query over p_bounds grown by the collision radius plus a margin: sets bodies_near and
+	// moving_bodies_near.
+	void _query_bounds(const AABB &p_bounds);
+	AABB _solver_bounds() const;
+	float _collision_radius() const;
+	void _set_sleeping(bool p_sleeping);
+	void _wake_on_change();
 	void _update_mesh(); // CPU: from the solver
 	void _update_gpu_mesh(); // GPU: from the server readback
 	Vector3 _sample_wind(double p_delta);
@@ -176,8 +202,27 @@ public:
 	void set_friction(float p_v);
 	float get_friction() const { return friction; }
 
+	void set_thickness(float p_v);
+	float get_thickness() const { return thickness; }
+
 	void set_simulating(bool p_v);
 	bool is_simulating() const { return simulating; }
+
+	void set_can_sleep(bool p_v);
+	bool get_can_sleep() const { return can_sleep; }
+	void set_sleep_speed_threshold(float p_v);
+	float get_sleep_speed_threshold() const { return sleep_speed_threshold; }
+	void set_sleep_time(float p_v);
+	float get_sleep_time() const { return sleep_time; }
+	bool is_sleeping() const { return sleeping; }
+	void wake();
+	void sleep();
+
+	// Velocity changes at a world point, spread over the unpinned vertices within p_radius and applied at the start
+	// of the next tick (CPU solver only). Each wakes the cloth.
+	void apply_impulse(const Vector3 &p_position, const Vector3 &p_impulse, float p_radius = 0.1);
+	void apply_force(const Vector3 &p_position, const Vector3 &p_force, float p_radius = 0.1);
+	void apply_central_impulse(const Vector3 &p_impulse);
 
 	// Drop the cloth back to its rest shape (in the node's current transform).
 	void reset();
