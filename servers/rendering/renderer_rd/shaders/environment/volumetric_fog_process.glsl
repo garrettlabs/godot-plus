@@ -320,6 +320,19 @@ const vec3 halton_map[TEMPORAL_FRAMES] = vec3[](
 // Higher values will make light in volumetric fog fade out sooner when it's occluded by shadow.
 const float INV_FOG_FADE = 10.0;
 
+// The spot shadow map holds reverse-Z NDC depth of a perspective camera with z_near = min(0.025, radius) and
+// z_far = radius (shadow_matrix folds in the reverse-Z correction and the 0..1 bias), so z = n * (f - d) / (d * (f - n))
+// for a view depth d. Fading with the NDC difference lets a distant caster hide almost nothing, so convert both
+// depths to linear view depth, as the omni branch does with its distance. The bias is in meters.
+float spot_shadow_fade(float p_point_z, float p_caster_z, float p_inv_radius, float p_bias) {
+	float spot_far = 1.0 / p_inv_radius;
+	float spot_near = min(0.025, spot_far);
+	float spot_scale = spot_far - spot_near;
+	float point_depth = spot_near * spot_far / (spot_near + clamp(p_point_z, 0.0, 1.0) * spot_scale);
+	float caster_depth = spot_near * spot_far / (spot_near + clamp(p_caster_z, 0.0, 1.0) * spot_scale);
+	return exp(min(0.0, caster_depth - (point_depth - p_bias)) * INV_FOG_FADE);
+}
+
 void main() {
 	vec3 fog_cell_size = 1.0 / vec3(params.fog_volume_size);
 
@@ -624,7 +637,6 @@ void main() {
 							vec4 v = vec4(view_pos, 1.0);
 
 							vec4 splane = (spot_lights.data[light_index].shadow_matrix * v);
-							splane.z -= spot_lights.data[light_index].shadow_bias;
 							float safe_w = abs(splane.w) > 1e-6 ? splane.w : (splane.w >= 0.0 ? 1e-6 : -1e-6);
 							splane /= safe_w;
 
@@ -632,7 +644,7 @@ void main() {
 
 							float depth = texture(sampler2D(shadow_atlas, linear_sampler), pos.xy).r;
 
-							shadow_attenuation = mix(1.0 - spot_lights.data[light_index].shadow_opacity, 1.0, exp(min(0.0, (pos.z - depth)) / spot_lights.data[light_index].inv_radius * INV_FOG_FADE));
+							shadow_attenuation = mix(1.0 - spot_lights.data[light_index].shadow_opacity, 1.0, spot_shadow_fade(pos.z, depth, spot_lights.data[light_index].inv_radius, spot_lights.data[light_index].shadow_bias));
 						}
 						total_light += light * attenuation * shadow_attenuation * henyey_greenstein(dot(safe_normalize(light_rel_vec), safe_normalize(view_pos)), params.phase_g) * spot_lights.data[light_index].volumetric_fog_energy;
 					}
