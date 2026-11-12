@@ -33,9 +33,8 @@
 #include "flow_scatter_rd.h"
 
 #include "core/os/mutex.h"
-#include "core/templates/paged_array.h"
-
 #include "core/templates/local_vector.h"
+#include "core/templates/paged_array.h"
 #include "scene/3d/node_3d.h"
 #include "scene/resources/gradient.h"
 
@@ -79,6 +78,10 @@ private:
 	float buoyancy = 2.0f;
 	float cooling_rate = 1.5f;
 	float smoke_fade = 0.65f;
+	// How fast the divergence (expansion) channel and the velocity die off; Flow's defaults.
+	float divergence_fade = 1.0f;
+	float divergence_damping = 0.01f;
+	float velocity_damping = 0.01f;
 	float vorticity = 0.6f;
 	float ignition_temperature = 0.05f;
 	bool combustion = true;
@@ -165,6 +168,7 @@ private:
 	float scattering_anisotropy = 0.4f;
 	int scattering_shadow_steps = 4;
 	float scattering_shadow_reach = 4.0f;
+
 public:
 	// Which lights' shadows the glow receives (a checkbox list). Directional
 	// will be a third flag (4) when the sun's shadow reaches the gas.
@@ -221,6 +225,12 @@ public:
 	float get_cooling_rate() const { return cooling_rate; }
 	void set_smoke_fade(float p_v) { smoke_fade = MAX(p_v, 0.0f); }
 	float get_smoke_fade() const { return smoke_fade; }
+	void set_divergence_fade(float p_v) { divergence_fade = MAX(p_v, 0.0f); }
+	float get_divergence_fade() const { return divergence_fade; }
+	void set_divergence_damping(float p_v) { divergence_damping = CLAMP(p_v, 0.0f, 1.0f); }
+	float get_divergence_damping() const { return divergence_damping; }
+	void set_velocity_damping(float p_v) { velocity_damping = CLAMP(p_v, 0.0f, 1.0f); }
+	float get_velocity_damping() const { return velocity_damping; }
 	void set_vorticity(float p_v) { vorticity = MAX(p_v, 0.0f); }
 	float get_vorticity() const { return vorticity; }
 	void set_ignition_temperature(float p_v) { ignition_temperature = p_v; }

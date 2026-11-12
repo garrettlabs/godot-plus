@@ -44,6 +44,8 @@
 // converted with UNITS_PER_METER at this boundary.
 
 #include <cstdint>
+#include <memory>
+#include <vector>
 
 class RenderingDevice;
 
@@ -57,6 +59,8 @@ struct Emitter {
 	enum Shape {
 		SHAPE_SPHERE,
 		SHAPE_BOX,
+		// Flow's point emitter: each point splats into the 8 cells around it.
+		SHAPE_POINTS,
 	};
 	Shape shape = SHAPE_SPHERE;
 	// Godot Transform3D: basis columns, then origin (meters).
@@ -71,6 +75,14 @@ struct Emitter {
 	float smoke = 1.0f;
 	float divergence = 0.0f;
 	float couple_rate = 2.0f;
+	// SHAPE_POINTS: 6 floats per point, its position (local meters) and the
+	// unit direction radial_velocity pushes along (local); shared, not copied,
+	// between the steps that use the same layout. points_version changes when
+	// the layout does (never 0); luid identifies the emitter across steps.
+	std::shared_ptr<const std::vector<float>> points;
+	uint64_t points_version = 1;
+	uint64_t luid = 0;
+	float radial_velocity = 0.0f; // local m/s, added to velocity
 	// A solid for the gas: zero smoke/heat inside, the gas takes on
 	// body_velocity there. Allocates no grid of its own.
 	bool collision = false;
@@ -83,6 +95,11 @@ struct Settings {
 	float buoyancy = 2.0f; // per unit temperature
 	float cooling_rate = 1.5f;
 	float smoke_fade = 0.65f;
+	// Flow's advection fade (subtracted per second) and damping (fraction lost
+	// per second); the defaults are Flow's own.
+	float divergence_fade = 1.0f;
+	float divergence_damping = 0.01f;
+	float velocity_damping = 0.01f;
 	float vorticity = 0.6f;
 	float ignition_temperature = 0.05f;
 	bool combustion = true;
