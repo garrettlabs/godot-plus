@@ -910,6 +910,14 @@ public:
 		PagedArray<RenderGeometryInstance *> rt_geometry_instances;
 		PagedArray<RID> fog_volumes;
 
+		// Visible particle systems whose view axis is set after a threaded cull (see _scene_cull).
+		struct ParticlesViewAxis {
+			RID particles;
+			Vector3 axis;
+			Vector3 up_axis;
+		};
+		LocalVector<ParticlesViewAxis> particles_view_axes;
+
 		struct DirectionalShadow {
 			PagedArray<RenderGeometryInstance *> cascade_geometry_instances[RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES];
 		} directional_shadows[RendererSceneRender::MAX_DIRECTIONAL_LIGHTS];
@@ -928,6 +936,7 @@ public:
 			mesh_instances.clear();
 			rt_geometry_instances.clear();
 			fog_volumes.clear();
+			particles_view_axes.clear();
 			for (int i = 0; i < RendererSceneRender::MAX_DIRECTIONAL_LIGHTS; i++) {
 				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES; j++) {
 					directional_shadows[i].cascade_geometry_instances[j].clear();
@@ -1173,6 +1182,7 @@ public:
 		const RendererSceneOcclusionCull::HZBuffer *occlusion_buffer;
 		const Projection *camera_matrix;
 		uint64_t visibility_viewport_mask;
+		bool threaded = false;
 	};
 
 	void _scene_cull_threaded(uint32_t p_thread, CullData *cull_data);

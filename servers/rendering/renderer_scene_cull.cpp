@@ -32,10 +32,10 @@
 
 #include "core/config/engine.h"
 #include "core/config/project_settings.h"
-#include "core/profiling/profiling.h"
 #include "core/math/geometry_3d.h"
 #include "core/object/callable_mp.h"
 #include "core/object/worker_thread_pool.h"
+#include "core/profiling/profiling.h"
 #include "servers/rendering/rendering_light_culler.h"
 #include "servers/rendering/rendering_server.h"
 #include "servers/rendering/rendering_server_default.h"
@@ -3086,7 +3086,16 @@ void RendererSceneCull::_scene_cull(CullData &cull_data, InstanceCullResult &cul
 							RSG::particles_storage->particles_request_process(idata.base_rid);
 							cull_data.cull->lock.unlock();
 
-							RS::get_singleton()->call_on_render_thread(callable_mp_static(&RendererSceneCull::_scene_particles_set_view_axis).bind(idata.base_rid, -cull_data.cam_transform.basis.get_column(2).normalized(), cull_data.cam_transform.basis.get_column(1).normalized()));
+							const Vector3 view_axis = -cull_data.cam_transform.basis.get_column(2).normalized();
+							const Vector3 up_axis = cull_data.cam_transform.basis.get_column(1).normalized();
+							if (cull_data.threaded) {
+								// Pool threads cannot call this directly, and deferring it through the command queue
+								// can land it behind a free of the same RID. The render thread applies these once
+								// the group task has completed.
+								cull_result.particles_view_axes.push_back({ idata.base_rid, view_axis, up_axis });
+							} else {
+								_scene_particles_set_view_axis(idata.base_rid, view_axis, up_axis);
+							}
 							//particles visible? request redraw
 							RenderingServerDefault::redraw_request();
 						}
@@ -3547,6 +3556,7 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 
 		if (cull_to > thread_cull_threshold) {
 			//multiple threads
+			cull_data.threaded = true;
 			for (InstanceCullResult &thread : scene_cull_result_threads) {
 				thread.clear();
 			}
@@ -3555,6 +3565,9 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 			WorkerThreadPool::get_singleton()->wait_for_group_task_completion(group_task);
 
 			for (InstanceCullResult &thread : scene_cull_result_threads) {
+				for (const InstanceCullResult::ParticlesViewAxis &view_axis : thread.particles_view_axes) {
+					_scene_particles_set_view_axis(view_axis.particles, view_axis.axis, view_axis.up_axis);
+				}
 				scene_cull_result.append_from(thread);
 			}
 
