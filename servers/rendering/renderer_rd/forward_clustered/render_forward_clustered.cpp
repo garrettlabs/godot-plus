@@ -2340,6 +2340,15 @@ void RenderForwardClustered::_update_raytracing_scene(const RenderDataRD *p_rend
 	}
 }
 
+RID RenderForwardClustered::_get_rt_dummy_tlas() {
+	// Bound where a set must provide a scene but none was built for it: traces see nothing.
+	if (rt_dummy_tlas.is_null()) {
+		rt_dummy_tlas = RD::get_singleton()->tlas_create(1, RD::ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT);
+		RD::get_singleton()->tlas_build(rt_dummy_tlas, Span<RD::AccelerationStructureInstance>());
+	}
+	return rt_dummy_tlas;
+}
+
 void RenderForwardClustered::_process_rt_shadows(const RenderDataRD *p_render_data, RenderBufferDataForwardClustered *p_rb_data) {
 	RendererRD::LightStorage *light_storage = RendererRD::LightStorage::get_singleton();
 	Ref<RenderSceneBuffersRD> rb = p_render_data->render_buffers;
@@ -3262,7 +3271,14 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		transparent_color_pass_flags &= ~uint32_t(COLOR_PASS_FLAG_MOTION_VECTORS);
 
 		RID alpha_framebuffer = rb_data.is_valid() ? rb_data->get_color_pass_fb(transparent_color_pass_flags) : color_only_framebuffer;
-		RenderListParameters render_list_params(render_list[RENDER_LIST_ALPHA].elements.ptr(), render_list[RENDER_LIST_ALPHA].element_info.ptr(), render_list[RENDER_LIST_ALPHA].elements.size(), reverse_cull, PASS_MODE_COLOR, transparent_color_pass_flags, rb_data.is_null(), p_render_data->directional_light_soft_shadows, rp_uniform_set, get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_WIREFRAME, Vector2(), p_render_data->scene_data->lod_distance_multiplier, p_render_data->scene_data->screen_mesh_lod_threshold, p_render_data->scene_data->view_count, 0, base_specialization, !is_reflection_probe);
+		// Transparent fragments are not where the ray traced shadow pass traced from (the depth pre-pass), so they
+		// trace their own shadow rays against the scene of this frame.
+		SceneShaderForwardClustered::ShaderSpecialization transparent_specialization = base_specialization;
+		if (using_rt_shadows && rb_data->rt_tlas.is_valid() && GLOBAL_GET_CACHED(bool, "rendering/raytracing/shadows/transparent_receivers")) {
+			transparent_specialization.rt_shadow_trace = 1;
+			transparent_specialization.rt_shadow_soft = GLOBAL_GET_CACHED(int, "rendering/raytracing/shadows/soft_shadow_samples") > 1;
+		}
+		RenderListParameters render_list_params(render_list[RENDER_LIST_ALPHA].elements.ptr(), render_list[RENDER_LIST_ALPHA].element_info.ptr(), render_list[RENDER_LIST_ALPHA].elements.size(), reverse_cull, PASS_MODE_COLOR, transparent_color_pass_flags, rb_data.is_null(), p_render_data->directional_light_soft_shadows, rp_uniform_set, get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_WIREFRAME, Vector2(), p_render_data->scene_data->lod_distance_multiplier, p_render_data->scene_data->screen_mesh_lod_threshold, p_render_data->scene_data->view_count, 0, transparent_specialization, !is_reflection_probe);
 		_render_list_with_draw_list(&render_list_params, alpha_framebuffer, RD::DRAW_DEFAULT_ALL, Vector<Color>(), 0.0f, 0u, p_render_data->render_region);
 	}
 
@@ -4588,6 +4604,10 @@ RID RenderForwardClustered::_setup_render_pass_uniform_set(RenderListType p_rend
 		u.append_id(buffer);
 		uniforms.push_back(u);
 	}
+	if (rt_shadows != nullptr) {
+		// Transparent receivers of ray traced shadows trace against this frame's scene.
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_ACCELERATION_STRUCTURE, 40, (rb_data.is_valid() && rb_data->rt_tlas.is_valid()) ? rb_data->rt_tlas : _get_rt_dummy_tlas()));
+	}
 #ifdef MODULE_TEXTURE_STREAMING_ENABLED
 	{
 		RD::Uniform u;
@@ -4822,6 +4842,10 @@ RID RenderForwardClustered::_setup_sdfgi_render_pass_uniform_set(RID p_albedo_te
 		u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
 		u.append_id(rt_shadow_default_buffer);
 		uniforms.push_back(u);
+	}
+	if (rt_shadows != nullptr) {
+		// Likewise binding 40, declared by every fragment variant built with ray traced shadows.
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_ACCELERATION_STRUCTURE, 40, _get_rt_dummy_tlas()));
 	}
 
 	if (scene_shader.default_shader_sdfgi_rd.is_null()) {
@@ -5984,6 +6008,7 @@ RenderForwardClustered::RenderForwardClustered() {
 		if (RendererRD::MeshStorage::get_singleton()->is_raytracing_enabled()) {
 			// Without it the shaders carry no ray traced shadow code, which costs GPU time even when no light is traced.
 			defines += "\n#define USE_RT_SHADOWS\n";
+			defines += "\n#define RT_SHADOW_INSTANCE_MASK " + itos(RT_INSTANCE_MASK_SHADOW_CASTER) + "u\n";
 		}
 
 #ifdef MODULE_TEXTURE_STREAMING_ENABLED
@@ -6119,6 +6144,7 @@ RenderForwardClustered::RenderForwardClustered() {
 		rt_shadows = memnew(RendererRD::RTShadows);
 		rt_ao = memnew(RendererRD::RTAmbientOcclusion);
 		rt_reflections = memnew(RendererRD::RTReflections);
+		_get_rt_dummy_tlas();
 	}
 	motion_vectors_store = memnew(RendererRD::MotionVectorsStore);
 #ifdef METAL_MFXTEMPORAL_ENABLED
@@ -6145,6 +6171,9 @@ RenderForwardClustered::~RenderForwardClustered() {
 		rt_reflections = nullptr;
 	}
 	RD::get_singleton()->free_rid(rt_shadow_default_buffer);
+	if (rt_dummy_tlas.is_valid()) {
+		RD::get_singleton()->free_rid(rt_dummy_tlas);
+	}
 
 	if (taa != nullptr) {
 		memdelete(taa);

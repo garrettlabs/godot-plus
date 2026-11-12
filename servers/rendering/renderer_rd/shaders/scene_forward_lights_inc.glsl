@@ -513,7 +513,7 @@ void light_process_omni(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 		// Ray traced in a pass of its own, no shadow map.
 		use_shadow_map = false;
 		if (omni_attenuation > HALF_FLT_MIN && omni_lights.data[idx].shadow_opacity > 0.001) {
-			shadow = mix(half(1.0), half(rt_shadow_get(omni_lights.data[idx].rt_shadow_index)), half(omni_lights.data[idx].shadow_opacity));
+			shadow = mix(half(1.0), half(rt_shadow_get(omni_lights.data[idx].rt_shadow_index, vertex, vec3(normal), omni_lights.data[idx].position, omni_lights.data[idx].inv_radius, omni_lights.data[idx].size, taa_frame_count)), half(omni_lights.data[idx].shadow_opacity));
 		}
 	}
 #endif
@@ -845,7 +845,7 @@ void light_process_spot(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 		// Ray traced in a pass of its own, no shadow map.
 		use_shadow_map = false;
 		if (spot_attenuation > HALF_FLT_MIN && spot_lights.data[idx].shadow_opacity > 0.001) {
-			shadow = mix(half(1.0), half(rt_shadow_get(spot_lights.data[idx].rt_shadow_index)), half(spot_lights.data[idx].shadow_opacity));
+			shadow = mix(half(1.0), half(rt_shadow_get(spot_lights.data[idx].rt_shadow_index, vertex, vec3(normal), spot_lights.data[idx].position, spot_lights.data[idx].inv_radius, spot_lights.data[idx].size, taa_frame_count)), half(spot_lights.data[idx].shadow_opacity));
 		}
 	}
 #endif

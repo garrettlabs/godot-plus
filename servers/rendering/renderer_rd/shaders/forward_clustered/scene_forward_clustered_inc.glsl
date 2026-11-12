@@ -154,6 +154,15 @@ bool sc_material_feedback() {
 	return ((sc_packed_1() >> 7) & 1U) != 0;
 }
 
+// Transparent pass with ray traced shadows: fragments the shadow pass did not trace from trace their own rays.
+bool sc_rt_shadow_trace() {
+	return ((sc_packed_1() >> 8) & 1U) != 0;
+}
+
+bool sc_rt_shadow_soft() {
+	return ((sc_packed_1() >> 9) & 1U) != 0;
+}
+
 float sc_luminance_multiplier() {
 	// Not used in clustered renderer but we share some code with the mobile renderer that requires this.
 	return 1.0;

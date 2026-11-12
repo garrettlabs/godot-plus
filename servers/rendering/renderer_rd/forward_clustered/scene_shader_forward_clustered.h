@@ -130,6 +130,8 @@ public:
 				uint32_t cluster_has_area_light : 1;
 				uint32_t use_lightmap_specular : 1;
 				uint32_t material_feedback : 1;
+				uint32_t rt_shadow_trace : 1; // Transparent pass: trace shadow rays for fragments the ray traced shadow pass did not.
+				uint32_t rt_shadow_soft : 1; // With rt_shadow_trace: lights with a size get soft shadows (soft_shadow_samples > 1).
 			};
 		};
 
