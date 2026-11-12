@@ -43,14 +43,14 @@
 #include "core/templates/hash_set.h"
 #include "scene/3d/camera_3d.h"
 #include "scene/3d/light_3d.h"
-#include "scene/main/window.h"
-#include "servers/rendering/renderer_rd/renderer_scene_render_rd.h"
-#include "servers/rendering/renderer_rd/storage_rd/light_storage.h"
 #include "scene/main/scene_tree.h"
 #include "scene/main/viewport.h"
+#include "scene/main/window.h"
 #include "scene/resources/3d/world_3d.h"
 #include "scene/resources/environment.h"
 #include "servers/physics_3d/physics_server_3d.h"
+#include "servers/rendering/renderer_rd/renderer_scene_render_rd.h"
+#include "servers/rendering/renderer_rd/storage_rd/light_storage.h"
 #include "servers/rendering/rendering_device.h"
 #include "servers/rendering/rendering_server.h"
 #include "servers/rendering/rendering_server_default.h"
@@ -421,7 +421,7 @@ void PhysXFlow3D::_gather_colliders(const AABB &p_region, LocalVector<FlowBacken
 		const Transform3D xform = body_xform * ps->body_get_shape_transform(body, index);
 		// The body's velocity where this shape is, spin included: a shape on a
 		// spinning or swinging body (a rotor, a door, a walker on a turntable)
-		// moves although the body's centre may not.
+		// moves although the body's center may not.
 		Vector3 velocity = ps->body_get_state(body, PS3DE::BODY_STATE_LINEAR_VELOCITY);
 		if (PhysicsDirectBodyState3D *state = ps->body_get_direct_state(body)) {
 			velocity = state->get_velocity_at_local_position(xform.origin - body_xform.origin);
@@ -739,6 +739,9 @@ void PhysXFlow3D::_step(double p_delta) {
 	settings.buoyancy = buoyancy;
 	settings.cooling_rate = cooling_rate;
 	settings.smoke_fade = smoke_fade;
+	settings.divergence_fade = divergence_fade;
+	settings.divergence_damping = divergence_damping;
+	settings.velocity_damping = velocity_damping;
 	settings.vorticity = vorticity;
 	settings.ignition_temperature = ignition_temperature;
 	settings.combustion = combustion;
@@ -957,6 +960,12 @@ void PhysXFlow3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_cooling_rate"), &PhysXFlow3D::get_cooling_rate);
 	ClassDB::bind_method(D_METHOD("set_smoke_fade", "fade"), &PhysXFlow3D::set_smoke_fade);
 	ClassDB::bind_method(D_METHOD("get_smoke_fade"), &PhysXFlow3D::get_smoke_fade);
+	ClassDB::bind_method(D_METHOD("set_divergence_fade", "fade"), &PhysXFlow3D::set_divergence_fade);
+	ClassDB::bind_method(D_METHOD("get_divergence_fade"), &PhysXFlow3D::get_divergence_fade);
+	ClassDB::bind_method(D_METHOD("set_divergence_damping", "damping"), &PhysXFlow3D::set_divergence_damping);
+	ClassDB::bind_method(D_METHOD("get_divergence_damping"), &PhysXFlow3D::get_divergence_damping);
+	ClassDB::bind_method(D_METHOD("set_velocity_damping", "damping"), &PhysXFlow3D::set_velocity_damping);
+	ClassDB::bind_method(D_METHOD("get_velocity_damping"), &PhysXFlow3D::get_velocity_damping);
 	ClassDB::bind_method(D_METHOD("set_vorticity", "vorticity"), &PhysXFlow3D::set_vorticity);
 	ClassDB::bind_method(D_METHOD("get_vorticity"), &PhysXFlow3D::get_vorticity);
 	ClassDB::bind_method(D_METHOD("set_ignition_temperature", "temperature"), &PhysXFlow3D::set_ignition_temperature);
@@ -1018,6 +1027,9 @@ void PhysXFlow3D::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "buoyancy", PROPERTY_HINT_RANGE, "-10,10,0.01"), "set_buoyancy", "get_buoyancy");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "cooling_rate", PROPERTY_HINT_RANGE, "0,10,0.01"), "set_cooling_rate", "get_cooling_rate");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "smoke_fade", PROPERTY_HINT_RANGE, "0,10,0.01"), "set_smoke_fade", "get_smoke_fade");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "divergence_fade", PROPERTY_HINT_RANGE, "0,100,0.01,or_greater"), "set_divergence_fade", "get_divergence_fade");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "divergence_damping", PROPERTY_HINT_RANGE, "0,1,0.001"), "set_divergence_damping", "get_divergence_damping");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "velocity_damping", PROPERTY_HINT_RANGE, "0,1,0.001"), "set_velocity_damping", "get_velocity_damping");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "vorticity", PROPERTY_HINT_RANGE, "0,5,0.01"), "set_vorticity", "get_vorticity");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "combustion"), "set_combustion", "is_combustion");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ignition_temperature", PROPERTY_HINT_RANGE, "0,2,0.001"), "set_ignition_temperature", "get_ignition_temperature");

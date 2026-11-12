@@ -65,6 +65,12 @@
 		<member name="cpu_readback" type="bool" setter="set_cpu_readback" getter="is_cpu_readback" default="false">
 			Copy temperature and smoke back to the CPU every few steps, for [method sample_smoke], [method sample_temperature] and the [code]bounds[/code] in [method get_stats]. Off by default: it costs a full field copy each time and isn't needed for rendering.
 		</member>
+		<member name="divergence_damping" type="float" setter="set_divergence_damping" getter="get_divergence_damping" default="0.01">
+			The fraction of the divergence (expansion) channel lost per second, in proportion to its value. Each step removes whichever is larger: this proportional loss or [member divergence_fade]. The default is NVIDIA Flow's own.
+		</member>
+		<member name="divergence_fade" type="float" setter="set_divergence_fade" getter="get_divergence_fade" default="1.0">
+			How much of the divergence (expansion) channel is subtracted per second, independent of its value (it never crosses zero). An emitter's [member PhysXFlowEmitter3D.divergence] stays in the gas after the emitter stops and keeps pushing it outward until it has faded: at the default (NVIDIA Flow's own), a divergence of [code]10[/code] put in for three physics ticks was still expanding the gas a second later. A short pulse that should stop when its emitter stops needs a high fade: at [code]50[/code], the same pulse stopped growing about a quarter of a second after the emitter stopped. Values in between set how far the gas travels.
+		</member>
 		<member name="emission_strength" type="float" setter="set_emission_strength" getter="get_emission_strength" default="4.0">
 			How bright the [member heat_ramp] glow is. [code]0[/code] turns glowing off.
 		</member>
@@ -126,6 +132,9 @@
 		</member>
 		<member name="temperature_range" type="float" setter="set_temperature_range" getter="get_temperature_range" default="2.0">
 			The temperature at the end of [member heat_ramp].
+		</member>
+		<member name="velocity_damping" type="float" setter="set_velocity_damping" getter="get_velocity_damping" default="0.01">
+			The fraction of the gas's velocity lost per second, in proportion to its speed. Higher values make motion die off sooner, e.g. a dust cloud that should stop and hang; [code]0[/code] keeps it moving until something else slows it. The default is NVIDIA Flow's own.
 		</member>
 		<member name="vorticity" type="float" setter="set_vorticity" getter="get_vorticity" default="0.6">
 			Vorticity confinement: keeps small swirls alive for rolling, billowing gas.

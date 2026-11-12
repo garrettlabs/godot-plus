@@ -7,6 +7,10 @@ semantic version: tags are `vMAJOR.MINOR.PATCH`, and the binary reports
 upstream base stays visible in the string. The two earlier pre-releases used
 `v4.8-beta-plus.N`. See README.md for the scheme.
 
+## Unreleased (next: v1.5.0)
+
+- **flow-radial-emitter** — NVIDIA Flow: three new `PhysXFlow3D` settings, `divergence_fade`, `divergence_damping` and `velocity_damping`, pass through to Flow's advection (their defaults are Flow's own, so existing scenes are unchanged). Flow subtracts the divergence (expansion) channel at only 1.0 per second by default, so a short divergence pulse kept pushing the gas outward for seconds after its emitter stopped; with `divergence_fade` at 50, a pulse of divergence 10 held for three physics ticks stops growing about a quarter of a second after its emitter stops (at the default it was still accelerating after a second). `velocity_damping` sets how fast the gas's motion dies off, e.g. for a dust cloud that should stop and hang.
+
 ## v1.4.0 — 2026-11-10
 
 Upstream base: unchanged, `cafc17a192`. A MINOR release: ray traced ambient occlusion and ray traced reflections (Vulkan and D3D12, in place of SSAO and SSR when ray tracing is in effect; reflections with material records kept across frames, albedo texture averages at hidden points, reflected-motion reprojection and an optional half-size mode), view-consistent hits for both, a Windows export option that puts the runtime libraries in a subfolder, and a fix for light projectors on lights without a shadow map. Same package layout as v1.0.0, with one addition: the runtime DLLs are also placed beside the export templates in `templates/`, because the Windows exporter copies the Agility SDK, Streamline, PhysX GPU, Blast and Flow libraries from next to the template, and exports from the earlier packages carried none of them. D3D12 ray tracing still needs a build against the ray-tracing NIR library (`mesa_libs=`, see README.md); the release attaches it again as `godot-nir-static-x86_64-msvc-release.zip`, unmodified, with its notice file.

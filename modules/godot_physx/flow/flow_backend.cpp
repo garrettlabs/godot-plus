@@ -353,6 +353,9 @@ bool grid_step(Grid *p_grid, double p_time, float p_delta, const Settings &p_set
 	sim.advection.buoyancyPerTemp = p_settings.buoyancy;
 	sim.advection.coolingRate = p_settings.cooling_rate;
 	sim.advection.smoke.fade = p_settings.smoke_fade;
+	sim.advection.divergence.fade = p_settings.divergence_fade;
+	sim.advection.divergence.damping = p_settings.divergence_damping;
+	sim.advection.velocity.damping = p_settings.velocity_damping;
 	sim.advection.ignitionTemp = p_settings.ignition_temperature;
 	sim.vorticity.forceScale = p_settings.vorticity;
 	sim.nanoVdbExport.enabled = NV_FLOW_TRUE;

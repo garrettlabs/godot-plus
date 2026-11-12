@@ -83,6 +83,11 @@ struct Settings {
 	float buoyancy = 2.0f; // per unit temperature
 	float cooling_rate = 1.5f;
 	float smoke_fade = 0.65f;
+	// Flow's advection fade (subtracted per second) and damping (fraction lost
+	// per second); the defaults are Flow's own.
+	float divergence_fade = 1.0f;
+	float divergence_damping = 0.01f;
+	float velocity_damping = 0.01f;
 	float vorticity = 0.6f;
 	float ignition_temperature = 0.05f;
 	bool combustion = true;
