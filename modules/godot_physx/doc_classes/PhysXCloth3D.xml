@@ -49,16 +49,16 @@
 				Returns the number of simulated vertices.
 			</description>
 		</method>
-		<method name="is_sleeping" qualifiers="const">
-			<return type="bool" />
-			<description>
-				Returns [code]true[/code] while the cloth is asleep (see [member can_sleep]). Always [code]false[/code] on the GPU path.
-			</description>
-		</method>
 		<method name="is_gpu_accelerated" qualifiers="const">
 			<return type="bool" />
 			<description>
 				Returns [code]true[/code] when the GPU deformable-surface path is in use rather than the CPU XPBD fallback.
+			</description>
+		</method>
+		<method name="is_sleeping" qualifiers="const">
+			<return type="bool" />
+			<description>
+				Returns [code]true[/code] while the cloth is asleep (see [member can_sleep]). Always [code]false[/code] on the GPU path.
 			</description>
 		</method>
 		<method name="reset">
