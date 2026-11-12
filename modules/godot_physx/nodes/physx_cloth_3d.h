@@ -88,6 +88,7 @@ private:
 	bool collision_enabled = true;
 	uint32_t collision_mask = 1;
 	float friction = 0.4; // 0..1, tangential velocity bled off on contact
+	float thickness = 0.0; // collision radius in m; 0 = automatic (half the smallest rest edge, at least 5 mm)
 
 	bool simulating = true;
 
@@ -134,6 +135,7 @@ private:
 	// moving_bodies_near.
 	void _query_bounds(const AABB &p_bounds);
 	AABB _solver_bounds() const;
+	float _collision_radius() const;
 	void _set_sleeping(bool p_sleeping);
 	void _wake_on_change();
 	void _update_mesh(); // CPU: from the solver
@@ -199,6 +201,9 @@ public:
 	uint32_t get_collision_mask() const { return collision_mask; }
 	void set_friction(float p_v);
 	float get_friction() const { return friction; }
+
+	void set_thickness(float p_v);
+	float get_thickness() const { return thickness; }
 
 	void set_simulating(bool p_v);
 	bool is_simulating() const { return simulating; }

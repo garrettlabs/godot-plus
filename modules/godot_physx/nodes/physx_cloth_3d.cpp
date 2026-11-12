@@ -450,6 +450,10 @@ void PhysXCloth3D::_step(double p_delta) {
 	}
 }
 
+float PhysXCloth3D::_collision_radius() const {
+	return thickness > 0.0f ? thickness : MAX(solver.vertex_radius(), 0.005f);
+}
+
 AABB PhysXCloth3D::_solver_bounds() const {
 	const LocalVector<Vector3> &pos = solver.get_positions();
 	if (pos.is_empty()) {
@@ -479,7 +483,7 @@ void PhysXCloth3D::_query_bounds(const AABB &p_bounds) {
 	if (bounds_box.is_null()) {
 		bounds_box = ps->box_shape_create();
 	}
-	const float grow = MAX(solver.vertex_radius(), 0.005f) + 0.05f;
+	const float grow = _collision_radius() + 0.05f;
 	ps->shape_set_data(bounds_box, p_bounds.size * 0.5f + Vector3(grow, grow, grow));
 
 	PS3DT::ShapeParameters params;
@@ -719,7 +723,7 @@ void PhysXCloth3D::_collide() {
 		return;
 	}
 
-	const float radius = MAX(solver.vertex_radius(), 0.005f);
+	const float radius = _collision_radius();
 	if (collision_sphere.is_null()) {
 		collision_sphere = ps->sphere_shape_create();
 	}
@@ -1092,6 +1096,11 @@ void PhysXCloth3D::set_friction(float p_v) {
 	_wake_on_change();
 }
 
+void PhysXCloth3D::set_thickness(float p_v) {
+	thickness = CLAMP(p_v, 0.0f, 0.2f);
+	_wake_on_change();
+}
+
 void PhysXCloth3D::set_simulating(bool p_v) {
 	simulating = p_v;
 	_wake_on_change();
@@ -1169,6 +1178,9 @@ void PhysXCloth3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_friction", "friction"), &PhysXCloth3D::set_friction);
 	ClassDB::bind_method(D_METHOD("get_friction"), &PhysXCloth3D::get_friction);
 
+	ClassDB::bind_method(D_METHOD("set_thickness", "thickness"), &PhysXCloth3D::set_thickness);
+	ClassDB::bind_method(D_METHOD("get_thickness"), &PhysXCloth3D::get_thickness);
+
 	ClassDB::bind_method(D_METHOD("set_simulating", "simulating"), &PhysXCloth3D::set_simulating);
 	ClassDB::bind_method(D_METHOD("is_simulating"), &PhysXCloth3D::is_simulating);
 
@@ -1218,6 +1230,8 @@ void PhysXCloth3D::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "collision_enabled"), "set_collision_enabled", "is_collision_enabled");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "collision_mask", PROPERTY_HINT_LAYERS_3D_PHYSICS), "set_collision_mask", "get_collision_mask");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "collision_friction", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_friction", "get_friction");
+	ADD_GROUP("", "");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "thickness", PROPERTY_HINT_RANGE, "0,0.2,0.001,suffix:m"), "set_thickness", "get_thickness");
 
 	ADD_SIGNAL(MethodInfo("sleeping_state_changed"));
 

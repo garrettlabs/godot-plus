@@ -151,6 +151,9 @@
 		<member name="substeps" type="int" setter="set_substeps" getter="get_substeps" default="12">
 			Solver substeps per physics tick. More substeps make stiff cloth more stable at some CPU cost.
 		</member>
+		<member name="thickness" type="float" setter="set_thickness" getter="get_thickness" default="0.0">
+			Collision radius of each vertex in meters, which is also the distance the cloth keeps from bodies. A thicker cloth stands off walls and bodies and reads less like a film. [code]0[/code] keeps the automatic radius, half the shortest rest edge (at least 5 mm). Up to 0.2. Used by the CPU solver; the GPU path keeps its own.
+		</member>
 		<member name="wind" type="Vector3" setter="set_wind" getter="get_wind" default="Vector3(0, 0, 0)">
 			A constant world-space air velocity, added on top of any [member wind_area].
 		</member>
