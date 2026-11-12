@@ -237,6 +237,8 @@ private:
 
 	RendererRD::RTShadows *rt_shadows = nullptr; // Only with ray tracing enabled: its shader needs ray queries.
 	RID rt_shadow_default_buffer; // Bound when a view has no ray traced shadows.
+	RID rt_dummy_tlas; // Empty scene for binding 40 of render pass sets that have none (transparent receivers).
+	RID _get_rt_dummy_tlas();
 	LocalVector<RendererRD::RTShadows::Light> rt_shadow_lights;
 
 	void _process_rt_shadows(const RenderDataRD *p_render_data, RenderBufferDataForwardClustered *p_rb_data);

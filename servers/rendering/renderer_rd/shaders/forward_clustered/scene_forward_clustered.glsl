@@ -861,9 +861,15 @@ void main() {
 
 #[fragment]
 
-#version 450
+// GLSL 460: glslang accepts ray queries (USE_RT_SHADOWS, below) only from 460 on.
+#version 460
 
 #VERSION_DEFINES
+
+#ifdef USE_RT_SHADOWS
+// Transparent fragments trace their own shadow rays (rt_shadow_trace).
+#extension GL_EXT_ray_query : require
+#endif
 
 #define SHADER_IS_SRGB false
 #define SHADER_SPACE_FAR 0.0
@@ -877,6 +883,12 @@ void main() {
 /* Include half precision types. */
 #include "../half_inc.glsl"
 #include "scene_forward_clustered_inc.glsl"
+
+#ifdef USE_RT_SHADOWS
+// Declared in every fragment variant built with ray traced shadows so that all of them share one render pass set
+// layout; only the transparent pass of a color variant traces against it (sc_rt_shadow_trace()).
+layout(set = 1, binding = 40) uniform accelerationStructureEXT rt_tlas;
+#endif
 
 /* Varyings */
 
@@ -1049,22 +1061,90 @@ layout(location = 2) out vec2 motion_vector;
 #include "../scene_forward_gi_inc.glsl"
 
 #ifdef USE_RT_SHADOWS
-half rt_shadow_get(uint p_slot) {
+// 1.0 if nothing that casts shadows lies between p_origin and p_target (short of p_near from the target), else 0.0.
+// One ray query per call, called a compile-time constant number of times (as rt_shadows.glsl does).
+float rt_shadow_ray(vec3 p_origin, vec3 p_target, float p_near) {
+	vec3 to_target = p_target - p_origin;
+	float dist = max(length(to_target), 1e-6);
+	rayQueryEXT rq;
+	rayQueryInitializeEXT(rq, rt_tlas, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT, RT_SHADOW_INSTANCE_MASK, p_origin, 0.0, to_target / dist, max(dist - p_near, 0.0));
+	while (rayQueryProceedEXT(rq)) {
+	}
+	return rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT ? 1.0 : 0.0;
+}
+
+// Rays per light with a size, whatever rendering/raytracing/shadows/soft_shadow_samples says: a constant, so that the
+// ubershader variant (specialization constants read at run time) has no ray query in a loop of variable length.
+#define RT_TRANSPARENT_SOFT_SAMPLES 4u
+
+// One light's ray traced visibility for a fragment the shadow pass did not trace from: a transparent surface in front
+// of the opaque one it traced. Same rules as rt_shadows.glsl: origin pushed off the surface (towards the light's side,
+// as a transparent surface can be lit from behind), rays stop short of the light's near distance, lights with a size
+// sampled over a disc rotated per pixel and frame. Single exit, no early return before a query: ray-query helpers
+// with an early return have read every ray as a miss on one build (rt-fog-shadows).
+half rt_shadow_trace(vec3 p_vertex, vec3 p_normal, vec3 p_light_position, float p_light_inv_radius, float p_light_size, float p_taa_frame_count) {
+	mat4 inv_view = transpose(mat4(scene_data_block.data.inv_view_matrix[0],
+			scene_data_block.data.inv_view_matrix[1],
+			scene_data_block.data.inv_view_matrix[2],
+			vec4(0.0, 0.0, 0.0, 1.0)));
+	vec3 world_pos = (inv_view * vec4(p_vertex, 1.0)).xyz;
+	// The light as an offset from the fragment, not through the full transform: the ubershader variant with the latter
+	// read the shadow ray as a miss in every run of one build on Vulkan (NVIDIA 621.14), lighting transparent surfaces
+	// through walls until the specialized pipeline replaced it. Not understood; it went away with this form.
+	vec3 light_pos = world_pos + mat3(inv_view) * (p_light_position - p_vertex);
+	vec3 world_normal = normalize(mat3(inv_view) * p_normal);
+	vec3 to_light = light_pos - world_pos;
+	if (dot(world_normal, to_light) < 0.0) {
+		world_normal = -world_normal;
+	}
+	vec3 origin = world_pos + world_normal * (0.01 * (1.0 + length(p_vertex) * 0.05));
+	float radius = 1.0 / max(p_light_inv_radius, 1e-6);
+	float near = max(radius * 0.005, p_light_size);
+
+	float lit;
+	if (p_light_size > 0.0 && sc_rt_shadow_soft()) {
+		vec3 light_dir = normalize(to_light);
+		vec3 tangent = normalize(cross(abs(light_dir.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0), light_dir));
+		vec3 bitangent = cross(light_dir, tangent);
+		vec2 noise_pixel = gl_FragCoord.xy + mod(p_taa_frame_count, 64.0) * 5.588238;
+		float rotation = fract(52.9829189 * fract(dot(noise_pixel, vec2(0.06711056, 0.00583715)))) * 6.28318530718;
+		lit = 0.0;
+		for (uint i = 0u; i < RT_TRANSPARENT_SOFT_SAMPLES; i++) {
+			// Vogel disc.
+			float r = sqrt((float(i) + 0.5) / float(RT_TRANSPARENT_SOFT_SAMPLES)) * p_light_size;
+			float a = float(i) * 2.39996323 + rotation;
+			lit += rt_shadow_ray(origin, light_pos + (tangent * cos(a) + bitangent * sin(a)) * r, near);
+		}
+		lit /= float(RT_TRANSPARENT_SOFT_SAMPLES);
+	} else {
+		lit = rt_shadow_ray(origin, light_pos, near);
+	}
+	return half(lit);
+}
+
+// One light's ray traced visibility. The shadow pass wrote it per pixel for the opaque surface of the depth pre-pass;
+// any other fragment (transparent) traces its own rays in the transparent pass, or is unshadowed when that is off.
+half rt_shadow_get(uint p_slot, vec3 p_vertex, vec3 p_normal, vec3 p_light_position, float p_light_inv_radius, float p_light_size, float p_taa_frame_count) {
 	uvec2 pixel = uvec2(gl_FragCoord.xy);
 	uvec4 entries = rt_shadow_buffer.data[pixel.y * uint(scene_data_block.data.viewport_size.x) + pixel.x];
 	float traced_depth = uintBitsToFloat(entries.w);
+	half visibility = half(1.0); // Not traced for this pixel (more lights than entries, or outside the light).
 	if (abs(traced_depth - gl_FragCoord.z) > max(1e-6, gl_FragCoord.z * 1e-4)) {
-		// Not the opaque surface the pass traced from (a transparent one in front of it): no ray traced shadow.
-		return half(1.0);
-	}
-	uint key = p_slot + 1u;
-	for (uint i = 0u; i < 6u; i++) {
-		uint entry = (entries[i >> 1u] >> ((i & 1u) * 16u)) & 0xFFFFu;
-		if ((entry >> 8u) == key) {
-			return half(float(entry & 0xFFu) / 255.0);
+		// Not the opaque surface the pass traced from (a transparent one in front of it).
+		if (sc_rt_shadow_trace()) {
+			visibility = rt_shadow_trace(p_vertex, p_normal, p_light_position, p_light_inv_radius, p_light_size, p_taa_frame_count);
+		}
+	} else {
+		uint key = p_slot + 1u;
+		for (uint i = 0u; i < 6u; i++) {
+			uint entry = (entries[i >> 1u] >> ((i & 1u) * 16u)) & 0xFFFFu;
+			if ((entry >> 8u) == key) {
+				visibility = half(float(entry & 0xFFu) / 255.0);
+				break;
+			}
 		}
 	}
-	return half(1.0); // Not traced for this pixel (more lights than entries, or outside the light).
+	return visibility;
 }
 #endif // USE_RT_SHADOWS
 
