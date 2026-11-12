@@ -126,6 +126,11 @@ void GodotPhysXSoftBody3D::build_pending() {
 }
 
 void GodotPhysXSoftBody3D::_rebuild_from_mesh(bool p_keep_state) {
+	_rebuild_from_mesh_unpublished(p_keep_state);
+	_publish_render_state();
+}
+
+void GodotPhysXSoftBody3D::_rebuild_from_mesh_unpublished(bool p_keep_state) {
 	if (mesh.is_valid() && mesh_arrays_of != mesh && !Thread::is_main_thread()) {
 		// With physics/3d/run_on_separate_thread, reading the mesh back from the
 		// RenderingServer here would wait for the main thread, which may itself be
@@ -360,6 +365,7 @@ void GodotPhysXSoftBody3D::set_transform(const Transform3D &p_transform) {
 	} else if (mesh_ready) {
 		solver.reset(transform);
 		_update_normals_and_bounds();
+		_publish_render_state();
 	}
 }
 
@@ -647,6 +653,7 @@ void GodotPhysXSoftBody3D::step(double p_delta, const Vector3 &p_gravity) {
 	_resolve_contacts();
 	_damp_rigid_drift();
 	_update_normals_and_bounds();
+	_publish_render_state();
 }
 
 void GodotPhysXSoftBody3D::read_back() {
@@ -655,6 +662,7 @@ void GodotPhysXSoftBody3D::read_back() {
 	}
 	volume->read_back();
 	bounds = volume->get_bounds();
+	_publish_render_state();
 }
 
 // Gauss-Seidel constraint ordering and the volume solve each leave a tiny,
@@ -719,24 +727,51 @@ void GodotPhysXSoftBody3D::_damp_rigid_drift() {
 	}
 }
 
-void GodotPhysXSoftBody3D::update_rendering_server(PhysicsServer3DRenderingServerHandler *p_handler) {
-	if (!mesh_ready || !p_handler) {
+void GodotPhysXSoftBody3D::_publish_render_state() {
+	MutexLock lock(render_mutex);
+	render_ready = false;
+	if (!mesh_ready) {
+		render_positions.clear();
+		render_normals.clear();
 		return;
 	}
+	render_positions.resize(visual_vertex_count);
+	render_normals.resize(visual_vertex_count);
 	if (using_gpu && volume) {
 		for (uint32_t i = 0; i < visual_vertex_count; i++) {
 			const uint32_t v = map_visual_to_physics[i];
-			p_handler->set_vertex(i, volume->get_vertex_position(v));
-			p_handler->set_normal(i, volume->get_vertex_normal(v));
+			render_positions[i] = volume->get_vertex_position(v);
+			render_normals[i] = volume->get_vertex_normal(v);
 		}
-		p_handler->set_aabb(volume->get_bounds());
+		render_bounds = volume->get_bounds();
+	} else {
+		const LocalVector<Vector3> &pos = solver.get_positions();
+		for (uint32_t i = 0; i < visual_vertex_count; i++) {
+			const uint32_t v = map_visual_to_physics[i];
+			render_positions[i] = pos[v];
+			render_normals[i] = normals[v];
+		}
+		render_bounds = bounds;
+	}
+	render_ready = true;
+}
+
+void GodotPhysXSoftBody3D::update_rendering_server(PhysicsServer3DRenderingServerHandler *p_handler) {
+	if (!p_handler) {
 		return;
 	}
-	const LocalVector<Vector3> &pos = solver.get_positions();
-	for (uint32_t i = 0; i < visual_vertex_count; i++) {
-		const uint32_t v = map_visual_to_physics[i];
-		p_handler->set_vertex(i, pos[v]);
-		p_handler->set_normal(i, normals[v]);
+	// Main thread, possibly while the physics thread steps: read only the published copy.
+	AABB aabb;
+	{
+		MutexLock lock(render_mutex);
+		if (!render_ready) {
+			return;
+		}
+		for (uint32_t i = 0; i < render_positions.size(); i++) {
+			p_handler->set_vertex(i, render_positions[i]);
+			p_handler->set_normal(i, render_normals[i]);
+		}
+		aabb = render_bounds;
 	}
-	p_handler->set_aabb(bounds);
+	p_handler->set_aabb(aabb);
 }

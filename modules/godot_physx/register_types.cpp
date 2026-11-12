@@ -89,6 +89,24 @@
 #include "editor/plugins/editor_plugin.h"
 #endif
 
+// PhysicsServer3DWrapMT queues soft_body_update_rendering_server() for the physics thread, but the node calls it
+// between handler open() and close() on the main thread, so a queued call writes through a closed handler (a null
+// buffer) and the process dies. The body keeps a locked render-side copy, so this call goes straight to it from
+// whichever thread asks.
+class GodotPhysXWrapMT : public PhysicsServer3DWrapMT {
+	GDSOFTCLASS(GodotPhysXWrapMT, PhysicsServer3DWrapMT);
+
+	GodotPhysXServer3D *physx_server = nullptr;
+
+public:
+	virtual void soft_body_update_rendering_server(RID p_body, RequiredParam<PhysicsServer3DRenderingServerHandler> p_handler) override {
+		physx_server->soft_body_update_rendering_server(p_body, p_handler);
+	}
+
+	GodotPhysXWrapMT(GodotPhysXServer3D *p_server, bool p_create_thread) :
+			PhysicsServer3DWrapMT(p_server, p_create_thread), physx_server(p_server) {}
+};
+
 static PhysicsServer3D *create_physx_physics_server() {
 #ifdef THREADS_ENABLED
 	bool run_on_separate_thread = GLOBAL_GET("physics/3d/run_on_separate_thread");
@@ -98,7 +116,7 @@ static PhysicsServer3D *create_physx_physics_server() {
 
 	GodotPhysXServer3D *physics_server = memnew(GodotPhysXServer3D(run_on_separate_thread));
 
-	return memnew(PhysicsServer3DWrapMT(physics_server, run_on_separate_thread));
+	return memnew(GodotPhysXWrapMT(physics_server, run_on_separate_thread));
 }
 
 #ifdef TOOLS_ENABLED

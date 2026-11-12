@@ -35,6 +35,7 @@
 
 #include "core/math/aabb.h"
 #include "core/math/transform_3d.h"
+#include "core/os/mutex.h"
 #include "core/templates/hash_map.h"
 #include "core/templates/hash_set.h"
 #include "core/templates/local_vector.h"
@@ -118,6 +119,18 @@ class GodotPhysXSoftBody3D {
 	void _resolve_contacts();
 	void _damp_rigid_drift();
 	void _update_normals_and_bounds();
+
+	// What the node's per-frame draw reads. That call runs on the main thread (see
+	// GodotPhysXServer3D::soft_body_update_rendering_server) while the physics thread
+	// steps, rebuilds and resizes the solver's arrays, so it never touches them: step(),
+	// read_back() and the rebuilds publish a per-render-vertex copy here under the mutex.
+	Mutex render_mutex;
+	LocalVector<Vector3> render_positions;
+	LocalVector<Vector3> render_normals;
+	AABB render_bounds;
+	bool render_ready = false;
+	void _publish_render_state();
+	void _rebuild_from_mesh_unpublished(bool p_keep_state);
 
 public:
 	GodotPhysXSoftBody3D() {}
