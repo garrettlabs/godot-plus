@@ -44,6 +44,8 @@ void XPBDClothSolver::clear() {
 	constraints.clear();
 	indices.clear();
 	contacts.clear();
+	external_velocity.clear();
+	pending_velocity = false;
 	cols = 0;
 	rows = 0;
 	rest_volume = 0.0f;
@@ -321,6 +323,23 @@ void XPBDClothSolver::reset(const Transform3D &p_xform) {
 		velocities[i] = Vector3();
 	}
 	contacts.clear();
+	external_velocity.clear();
+	pending_velocity = false;
+}
+
+void XPBDClothSolver::add_velocity(int p_vertex, const Vector3 &p_delta_v) {
+	const int n = positions.size();
+	if (p_vertex < 0 || p_vertex >= n) {
+		return;
+	}
+	if ((int)external_velocity.size() != n) {
+		external_velocity.resize(n);
+		for (int i = 0; i < n; i++) {
+			external_velocity[i] = Vector3();
+		}
+	}
+	external_velocity[p_vertex] += p_delta_v;
+	pending_velocity = true;
 }
 
 void XPBDClothSolver::set_pinned(int p_vertex, bool p_pinned) {
@@ -430,6 +449,16 @@ void XPBDClothSolver::step(float p_dt, const Vector3 &p_gravity, const Vector3 &
 	const int substeps = MAX(settings.substeps, 1);
 	const float sdt = p_dt / (float)substeps;
 	const float vel_retain = MAX(1.0f - settings.damping * p_dt, 0.0f);
+
+	if (pending_velocity) {
+		for (int i = 0; i < n; i++) {
+			if (inv_mass[i] != 0.0f) {
+				velocities[i] += external_velocity[i];
+			}
+			external_velocity[i] = Vector3();
+		}
+		pending_velocity = false;
+	}
 
 	_apply_aero(p_dt, p_wind);
 

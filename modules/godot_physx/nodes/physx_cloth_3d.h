@@ -213,6 +213,12 @@ public:
 	void wake();
 	void sleep();
 
+	// Velocity changes at a world point, spread over the unpinned vertices within p_radius and applied at the start
+	// of the next tick (CPU solver only). Each wakes the cloth.
+	void apply_impulse(const Vector3 &p_position, const Vector3 &p_impulse, float p_radius = 0.1);
+	void apply_force(const Vector3 &p_position, const Vector3 &p_force, float p_radius = 0.1);
+	void apply_central_impulse(const Vector3 &p_impulse);
+
 	// Drop the cloth back to its rest shape (in the node's current transform).
 	void reset();
 	int get_vertex_count() const { return solver.vertex_count(); }

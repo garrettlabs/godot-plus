@@ -382,7 +382,7 @@ void PhysXCloth3D::_step(double p_delta) {
 	if (sleeping) {
 		// Asleep: no solver step, no per-vertex queries, no mesh update. Wind, or a non-static body that entered
 		// (or moved inside) the cloth's bounds, wakes it; the only cost is the one bounds query.
-		bool wake_now = wind_now != Vector3();
+		bool wake_now = wind_now != Vector3() || solver.has_pending_velocity();
 		if (!wake_now && collision_enabled) {
 			_query_bounds(sleep_bounds);
 			for (uint32_t i = 0; i < near_moving.size() && !wake_now; i++) {
@@ -429,7 +429,7 @@ void PhysXCloth3D::_step(double p_delta) {
 	// Sleep rule: for sleep_time, every unpinned vertex slower than the threshold, no vertex touching a
 	// non-static body, the anchor still and no wind.
 	if (can_sleep) {
-		bool still = !anchor_moving && !touched_moving_body && wind_now == Vector3();
+		bool still = !anchor_moving && !touched_moving_body && wind_now == Vector3() && !solver.has_pending_velocity();
 		if (still) {
 			const LocalVector<Vector3> &vel = solver.get_velocities();
 			const float limit_sq = sleep_speed_threshold * sleep_speed_threshold;
@@ -553,6 +553,92 @@ void PhysXCloth3D::sleep() {
 		return;
 	}
 	_set_sleeping(true);
+}
+
+void PhysXCloth3D::apply_impulse(const Vector3 &p_position, const Vector3 &p_impulse, float p_radius) {
+	if (!built) {
+		return;
+	}
+	if (gpu_cloth.is_valid()) {
+		WARN_PRINT_ONCE("PhysXCloth3D: impulses and forces only act on the CPU solver; ignored on the GPU path.");
+		return;
+	}
+	// Smooth falloff w = (1 - (d/r)^2)^2 inside the radius, scaled so the total momentum given equals the
+	// impulse: every vertex gets the velocity change dv * w, with dv = J / sum(w * m).
+	const LocalVector<Vector3> &pos = solver.get_positions();
+	const int n = solver.vertex_count();
+	const float r = MAX(p_radius, 0.001f);
+	const float r_sq = r * r;
+	float weighted_mass = 0.0f;
+	int nearest = -1;
+	float nearest_sq = 1.0e30f;
+	for (int i = 0; i < n; i++) {
+		const float im = solver.get_inv_mass(i);
+		if (im == 0.0f) {
+			continue;
+		}
+		const float d_sq = pos[i].distance_squared_to(p_position);
+		if (d_sq < nearest_sq) {
+			nearest_sq = d_sq;
+			nearest = i;
+		}
+		if (d_sq < r_sq) {
+			const float f = 1.0f - d_sq / r_sq;
+			weighted_mass += f * f / im;
+		}
+	}
+	if (nearest < 0) {
+		return; // everything is pinned
+	}
+	if (weighted_mass <= 0.0f) {
+		// No vertex inside the radius: the nearest one takes it all.
+		solver.add_velocity(nearest, p_impulse * solver.get_inv_mass(nearest));
+	} else {
+		const Vector3 dv = p_impulse / weighted_mass;
+		for (int i = 0; i < n; i++) {
+			if (solver.get_inv_mass(i) == 0.0f) {
+				continue;
+			}
+			const float d_sq = pos[i].distance_squared_to(p_position);
+			if (d_sq < r_sq) {
+				const float f = 1.0f - d_sq / r_sq;
+				solver.add_velocity(i, dv * (f * f));
+			}
+		}
+	}
+	_wake_on_change();
+}
+
+void PhysXCloth3D::apply_force(const Vector3 &p_position, const Vector3 &p_force, float p_radius) {
+	apply_impulse(p_position, p_force * (float)get_physics_process_delta_time(), p_radius);
+}
+
+void PhysXCloth3D::apply_central_impulse(const Vector3 &p_impulse) {
+	if (!built) {
+		return;
+	}
+	if (gpu_cloth.is_valid()) {
+		WARN_PRINT_ONCE("PhysXCloth3D: impulses and forces only act on the CPU solver; ignored on the GPU path.");
+		return;
+	}
+	const int n = solver.vertex_count();
+	float mass = 0.0f;
+	for (int i = 0; i < n; i++) {
+		const float im = solver.get_inv_mass(i);
+		if (im != 0.0f) {
+			mass += 1.0f / im;
+		}
+	}
+	if (mass <= 0.0f) {
+		return;
+	}
+	const Vector3 dv = p_impulse / mass;
+	for (int i = 0; i < n; i++) {
+		if (solver.get_inv_mass(i) != 0.0f) {
+			solver.add_velocity(i, dv);
+		}
+	}
+	_wake_on_change();
 }
 
 void PhysXCloth3D::_update_gpu_mesh() {
@@ -1095,6 +1181,9 @@ void PhysXCloth3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("is_sleeping"), &PhysXCloth3D::is_sleeping);
 	ClassDB::bind_method(D_METHOD("wake"), &PhysXCloth3D::wake);
 	ClassDB::bind_method(D_METHOD("sleep"), &PhysXCloth3D::sleep);
+	ClassDB::bind_method(D_METHOD("apply_impulse", "position", "impulse", "radius"), &PhysXCloth3D::apply_impulse, DEFVAL(0.1));
+	ClassDB::bind_method(D_METHOD("apply_force", "position", "force", "radius"), &PhysXCloth3D::apply_force, DEFVAL(0.1));
+	ClassDB::bind_method(D_METHOD("apply_central_impulse", "impulse"), &PhysXCloth3D::apply_central_impulse);
 
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "simulation_mode", PROPERTY_HINT_ENUM, "Auto,GPU,CPU"), "set_simulation_mode", "get_simulation_mode");
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "source_mesh", PROPERTY_HINT_RESOURCE_TYPE, "Mesh"), "set_source_mesh", "get_source_mesh");

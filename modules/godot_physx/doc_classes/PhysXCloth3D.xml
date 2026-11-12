@@ -11,6 +11,32 @@
 	<tutorials>
 	</tutorials>
 	<methods>
+		<method name="apply_central_impulse">
+			<return type="void" />
+			<param index="0" name="impulse" type="Vector3" />
+			<description>
+				Gives every unpinned vertex the same velocity change, [param impulse] (in kg·m/s) divided by the mass of the unpinned vertices, at the start of the next physics tick. Wakes the cloth. Ignored, with a warning, on the GPU path.
+			</description>
+		</method>
+		<method name="apply_force">
+			<return type="void" />
+			<param index="0" name="position" type="Vector3" />
+			<param index="1" name="force" type="Vector3" />
+			<param index="2" name="radius" type="float" default="0.1" />
+			<description>
+				Applies [param force] (in newtons) at the world point [param position] for the next physics tick: the same as [method apply_impulse] with [param force] times the physics tick length. Call it every tick for a steady force. Wakes the cloth. Ignored, with a warning, on the GPU path.
+			</description>
+		</method>
+		<method name="apply_impulse">
+			<return type="void" />
+			<param index="0" name="position" type="Vector3" />
+			<param index="1" name="impulse" type="Vector3" />
+			<param index="2" name="radius" type="float" default="0.1" />
+			<description>
+				Applies [param impulse] (in kg·m/s) at the world point [param position], spread over the unpinned vertices within [param radius] meters with a smooth falloff, so that the momentum given to them adds up to [param impulse]. When no vertex is that close, the nearest unpinned vertex takes it all. The velocity change lands at the start of the next physics tick, so a call from [method Node._physics_process] or a signal handler acts on the coming tick. Wakes the cloth. Ignored, with a warning, on the GPU path.
+				Use it for what the cloth cannot see by itself, such as a projectile that passes through it between two ticks. The cloth is light (its mass is [member density] times its area), so a small impulse moves it a long way.
+			</description>
+		</method>
 		<method name="get_pinned_positions" qualifiers="const">
 			<return type="PackedVector3Array" />
 			<description>
@@ -66,7 +92,7 @@
 			A cloth in a non-zero wind never sleeps, even a steady one, because the wind keeps moving it. Only the CPU solver sleeps.
 		</member>
 		<member name="collision_enabled" type="bool" setter="set_collision_enabled" getter="is_collision_enabled" default="true">
-			When enabled, each vertex is pushed out of any physics body it overlaps each step. A vertex touching a body that is not static also takes on that body's velocity at the contact along the contact normal (at least), and [member collision_friction] pulls its sliding velocity toward the body's, so a moving character or platform carries the cloth with it. The coupling is one-way: the cloth never pushes bodies. A body fast enough to pass through the cloth between two physics ticks is not seen. One shape query over the cloth's bounds comes first; when no body is in them the per-vertex queries are skipped.
+			When enabled, each vertex is pushed out of any physics body it overlaps each step. A vertex touching a body that is not static also takes on that body's velocity at the contact along the contact normal (at least), and [member collision_friction] pulls its sliding velocity toward the body's, so a moving character or platform carries the cloth with it. The coupling is one-way: the cloth never pushes bodies. A body fast enough to pass through the cloth between two physics ticks is not seen; use [method apply_impulse] for those. One shape query over the cloth's bounds comes first; when no body is in them the per-vertex queries are skipped.
 		</member>
 		<member name="collision_friction" type="float" setter="set_friction" getter="get_friction" default="0.4">
 			Fraction of a vertex's sideways velocity removed while it is touching a surface, from 0 (frictionless) to 1. Higher values stop the cloth sliding and spinning once it settles.
