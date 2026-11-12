@@ -46,6 +46,11 @@ public:
 	enum Shape {
 		SHAPE_SPHERE,
 		SHAPE_BOX,
+		// Points on a circle of `radius` in the local XZ plane, pushed outward
+		// along the circle's radius by radial_velocity.
+		SHAPE_RING,
+		// Points spread evenly over the sphere of `radius`, pushed outward.
+		SHAPE_SHELL,
 	};
 
 	static constexpr const char *GROUP = "physx_flow_emitters";
@@ -63,6 +68,10 @@ private:
 	float divergence = 0.0f;
 	float couple_rate = 2.0f;
 	bool collision = false;
+	// SHAPE_RING / SHAPE_SHELL.
+	int point_count = 64;
+	float radial_velocity = 4.0f;
+	float point_width = 0.0f; // 0: two cells of the flow's grid
 	NodePath flow_path;
 
 	// For collision: the body's velocity, from this node's own motion.
@@ -100,6 +109,13 @@ public:
 	float get_couple_rate() const { return couple_rate; }
 	void set_collision(bool p_collision);
 	bool is_collision() const { return collision; }
+	void set_point_count(int p_count);
+	int get_point_count() const { return point_count; }
+	void set_radial_velocity(float p_v) { radial_velocity = p_v; }
+	float get_radial_velocity() const { return radial_velocity; }
+	void set_point_width(float p_width) { point_width = MAX(p_width, 0.0f); }
+	float get_point_width() const { return point_width; }
+	bool is_point_shape() const { return shape == SHAPE_RING || shape == SHAPE_SHELL; }
 
 	// World-space velocity of this node over the last physics step.
 	Vector3 get_motion_velocity() const { return motion_velocity; }

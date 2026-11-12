@@ -39,6 +39,11 @@ void PhysXFlowEmitter3D::set_shape(Shape p_shape) {
 	shape = p_shape;
 	notify_property_list_changed();
 	update_gizmos();
+	update_configuration_warnings();
+}
+
+void PhysXFlowEmitter3D::set_point_count(int p_count) {
+	point_count = CLAMP(p_count, 4, 4096);
 }
 
 void PhysXFlowEmitter3D::set_radius(float p_radius) {
@@ -54,6 +59,7 @@ void PhysXFlowEmitter3D::set_size(const Vector3 &p_size) {
 void PhysXFlowEmitter3D::set_collision(bool p_collision) {
 	collision = p_collision;
 	notify_property_list_changed();
+	update_configuration_warnings();
 }
 
 void PhysXFlowEmitter3D::_notification(int p_what) {
@@ -107,15 +113,20 @@ PackedStringArray PhysXFlowEmitter3D::get_configuration_warnings() const {
 			warnings.push_back(RTR("There's more than one PhysXFlow3D: set \"Flow\" to the one this emitter should feed."));
 		}
 	}
+	if (collision && is_point_shape()) {
+		warnings.push_back(RTR("The Ring and Shell shapes can't be solids: \"Collision\" is ignored and this emitter emits."));
+	}
 	return warnings;
 }
 
 void PhysXFlowEmitter3D::_validate_property(PropertyInfo &p_property) const {
-	if (p_property.name == "radius" && shape != SHAPE_SPHERE) {
+	if (p_property.name == "radius" && shape == SHAPE_BOX) {
 		p_property.usage = PROPERTY_USAGE_NO_EDITOR;
 	} else if (p_property.name == "size" && shape != SHAPE_BOX) {
 		p_property.usage = PROPERTY_USAGE_NO_EDITOR;
-	} else if (collision && (p_property.name == "velocity" || p_property.name == "temperature" || p_property.name == "fuel" || p_property.name == "burn" || p_property.name == "smoke" || p_property.name == "divergence" || p_property.name == "couple_rate")) {
+	} else if ((p_property.name == "point_count" || p_property.name == "radial_velocity" || p_property.name == "point_width") && !is_point_shape()) {
+		p_property.usage = PROPERTY_USAGE_NO_EDITOR;
+	} else if (collision && !is_point_shape() && (p_property.name == "velocity" || p_property.name == "temperature" || p_property.name == "fuel" || p_property.name == "burn" || p_property.name == "smoke" || p_property.name == "divergence" || p_property.name == "couple_rate")) {
 		p_property.usage = PROPERTY_USAGE_NO_EDITOR;
 	}
 }
@@ -145,6 +156,12 @@ void PhysXFlowEmitter3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_couple_rate"), &PhysXFlowEmitter3D::get_couple_rate);
 	ClassDB::bind_method(D_METHOD("set_collision", "collision"), &PhysXFlowEmitter3D::set_collision);
 	ClassDB::bind_method(D_METHOD("is_collision"), &PhysXFlowEmitter3D::is_collision);
+	ClassDB::bind_method(D_METHOD("set_point_count", "count"), &PhysXFlowEmitter3D::set_point_count);
+	ClassDB::bind_method(D_METHOD("get_point_count"), &PhysXFlowEmitter3D::get_point_count);
+	ClassDB::bind_method(D_METHOD("set_radial_velocity", "velocity"), &PhysXFlowEmitter3D::set_radial_velocity);
+	ClassDB::bind_method(D_METHOD("get_radial_velocity"), &PhysXFlowEmitter3D::get_radial_velocity);
+	ClassDB::bind_method(D_METHOD("set_point_width", "width"), &PhysXFlowEmitter3D::set_point_width);
+	ClassDB::bind_method(D_METHOD("get_point_width"), &PhysXFlowEmitter3D::get_point_width);
 	ClassDB::bind_method(D_METHOD("get_motion_velocity"), &PhysXFlowEmitter3D::get_motion_velocity);
 	ClassDB::bind_method(D_METHOD("set_flow_path", "path"), &PhysXFlowEmitter3D::set_flow_path);
 	ClassDB::bind_method(D_METHOD("get_flow_path"), &PhysXFlowEmitter3D::get_flow_path);
@@ -152,9 +169,12 @@ void PhysXFlowEmitter3D::_bind_methods() {
 
 	ADD_PROPERTY(PropertyInfo(Variant::NODE_PATH, "flow", PROPERTY_HINT_NODE_PATH_VALID_TYPES, "PhysXFlow3D"), "set_flow_path", "get_flow_path");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "enabled"), "set_enabled", "is_enabled");
-	ADD_PROPERTY(PropertyInfo(Variant::INT, "shape", PROPERTY_HINT_ENUM, "Sphere,Box"), "set_shape", "get_shape");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "shape", PROPERTY_HINT_ENUM, "Sphere,Box,Ring,Shell"), "set_shape", "get_shape");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "radius", PROPERTY_HINT_RANGE, "0.01,20,0.01,or_greater,suffix:m"), "set_radius", "get_radius");
 	ADD_PROPERTY(PropertyInfo(Variant::VECTOR3, "size", PROPERTY_HINT_NONE, "suffix:m"), "set_size", "get_size");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "point_count", PROPERTY_HINT_RANGE, "4,4096,1"), "set_point_count", "get_point_count");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "radial_velocity", PROPERTY_HINT_RANGE, "-50,50,0.01,or_less,or_greater,suffix:m/s"), "set_radial_velocity", "get_radial_velocity");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "point_width", PROPERTY_HINT_RANGE, "0,2,0.001,or_greater,suffix:m"), "set_point_width", "get_point_width");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "collision"), "set_collision", "is_collision");
 	ADD_GROUP("Emission", "");
 	ADD_PROPERTY(PropertyInfo(Variant::VECTOR3, "velocity", PROPERTY_HINT_NONE, "suffix:m/s"), "set_velocity", "get_velocity");
@@ -167,4 +187,6 @@ void PhysXFlowEmitter3D::_bind_methods() {
 
 	BIND_ENUM_CONSTANT(SHAPE_SPHERE);
 	BIND_ENUM_CONSTANT(SHAPE_BOX);
+	BIND_ENUM_CONSTANT(SHAPE_RING);
+	BIND_ENUM_CONSTANT(SHAPE_SHELL);
 }

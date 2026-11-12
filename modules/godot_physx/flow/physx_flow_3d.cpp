@@ -40,6 +40,7 @@
 #include "core/object/class_db.h"
 #include "core/object/object_id.h"
 #include "core/os/os.h"
+#include "core/templates/hash_map.h"
 #include "core/templates/hash_set.h"
 #include "scene/3d/camera_3d.h"
 #include "scene/3d/light_3d.h"
@@ -71,6 +72,61 @@ void fill_transform(const Transform3D &p_xform, FlowBackend::Emitter &r_emitter)
 	}
 }
 
+// A ring or shell emitter's points (see FlowBackend::Emitter::points), in the
+// emitter's local frame. Flow splats each of its points into the 8 cells
+// around it, about two cells across; a wider point is drawn as several, one
+// cell apart, filling a ball of that width -- at most MAX_LAYOUT_POINTS in
+// all, spaced wider than a cell beyond that.
+constexpr int MAX_LAYOUT_POINTS = 65536;
+
+std::shared_ptr<const std::vector<float>> make_point_layout(bool p_shell, int p_count, float p_radius, float p_width, float p_cell) {
+	std::vector<Vector3> offsets;
+	const int wanted_per_axis = MAX(1, (int)Math::ceil(p_width / p_cell - 1e-3f) - 1);
+	int per_axis = wanted_per_axis;
+	// A ball keeps about half of its cube's points.
+	while (per_axis > 2 && (int64_t)p_count * per_axis * per_axis * per_axis / 2 > MAX_LAYOUT_POINTS) {
+		per_axis--;
+	}
+	const float spacing = per_axis > 1 ? p_cell * (wanted_per_axis - 1) / (per_axis - 1) : p_cell;
+	if (per_axis == 1) {
+		offsets.push_back(Vector3());
+	} else {
+		const float reach = 0.5f * (p_width - p_cell) + 0.01f * spacing;
+		for (int z = 0; z < per_axis; z++) {
+			for (int y = 0; y < per_axis; y++) {
+				for (int x = 0; x < per_axis; x++) {
+					const Vector3 o = (Vector3(x, y, z) - Vector3(1, 1, 1) * (0.5f * (per_axis - 1))) * spacing;
+					if (per_axis == 2 || o.length() <= reach) {
+						offsets.push_back(o);
+					}
+				}
+			}
+		}
+	}
+	std::shared_ptr<std::vector<float>> out = std::make_shared<std::vector<float>>();
+	out->reserve((size_t)p_count * offsets.size() * 6);
+	const float golden = Math::PI * (3.0f - Math::sqrt(5.0f));
+	for (int i = 0; i < p_count; i++) {
+		Vector3 dir;
+		if (p_shell) {
+			// A Fibonacci sphere: even spacing without poles.
+			const float y = 1.0f - 2.0f * (i + 0.5f) / p_count;
+			const float r = Math::sqrt(MAX(0.0f, 1.0f - y * y));
+			const float phi = golden * i;
+			dir = Vector3(Math::cos(phi) * r, y, Math::sin(phi) * r);
+		} else {
+			const float a = Math::TAU * i / p_count;
+			dir = Vector3(Math::cos(a), 0.0f, Math::sin(a));
+		}
+		const Vector3 center = dir * p_radius;
+		for (const Vector3 &o : offsets) {
+			const Vector3 p = center + o;
+			out->insert(out->end(), { (float)p.x, (float)p.y, (float)p.z, (float)dir.x, (float)dir.y, (float)dir.z });
+		}
+	}
+	return out;
+}
+
 FlowBackend::Emitter make_solid(const Transform3D &p_xform, const Vector3 &p_velocity) {
 	FlowBackend::Emitter e;
 	fill_transform(p_xform, e);
@@ -94,7 +150,23 @@ struct PhysXFlow3D::StepQueue {
 		LocalVector<FlowBackend::Emitter> emitters;
 	};
 	LocalVector<Step> queue;
+	// Each ring / shell emitter's point layout, rebuilt only when what it is
+	// made from changes (main thread only).
+	struct PointLayout {
+		uint64_t gather = 0;
+		bool shell = false;
+		int count = 0;
+		float radius = 0.0f;
+		float width = 0.0f;
+		float cell = 0.0f;
+		uint64_t version = 0;
+		std::shared_ptr<const std::vector<float>> points;
+	};
+	HashMap<ObjectID, PointLayout> layouts;
+	uint64_t gather = 0;
 };
+
+static uint64_t flow_point_layout_version = 0;
 
 PhysXFlow3D::PhysXFlow3D() {
 	steps = memnew(StepQueue);
@@ -352,6 +424,7 @@ void PhysXFlow3D::render_rd(PhysXFlowRenderEffect *p_effect, RenderingDevice *p_
 
 void PhysXFlow3D::_gather_emitters(LocalVector<FlowBackend::Emitter> &r_emitters, AABB &r_emitter_bounds) {
 	bool first = true;
+	steps->gather++;
 	for (Node *n : get_tree()->get_nodes_in_group(PhysXFlowEmitter3D::GROUP)) {
 		PhysXFlowEmitter3D *e = Object::cast_to<PhysXFlowEmitter3D>(n);
 		if (e == nullptr || !e->is_enabled() || !e->is_visible_in_tree() || e->get_flow() != this) {
@@ -363,6 +436,33 @@ void PhysXFlow3D::_gather_emitters(LocalVector<FlowBackend::Emitter> &r_emitters
 		const bool box = e->get_shape() == PhysXFlowEmitter3D::SHAPE_BOX;
 		fe.shape = box ? FlowBackend::Emitter::SHAPE_BOX : FlowBackend::Emitter::SHAPE_SPHERE;
 		fe.radius = e->get_radius();
+		AABB extent(xf.origin, Vector3());
+		if (e->is_point_shape()) {
+			// The layout is in the emitter's frame; the grid's cell and the
+			// default width are world sizes, brought into it by its scale.
+			const Vector3 scale = xf.basis.get_scale();
+			const float local_cell = cell_size / MAX((float)(scale.x + scale.y + scale.z) / 3.0f, 1e-4f);
+			const float width = e->get_point_width() > 0.0f ? e->get_point_width() : 2.0f * local_cell;
+			const bool shell = e->get_shape() == PhysXFlowEmitter3D::SHAPE_SHELL;
+			StepQueue::PointLayout &layout = steps->layouts[e->get_instance_id()];
+			if (!layout.points || layout.shell != shell || layout.count != e->get_point_count() || layout.radius != e->get_radius() || layout.width != width || layout.cell != local_cell) {
+				layout.shell = shell;
+				layout.count = e->get_point_count();
+				layout.radius = e->get_radius();
+				layout.width = width;
+				layout.cell = local_cell;
+				layout.version = ++flow_point_layout_version;
+				layout.points = make_point_layout(shell, layout.count, layout.radius, width, local_cell);
+			}
+			layout.gather = steps->gather;
+			fe.shape = FlowBackend::Emitter::SHAPE_POINTS;
+			fe.points = layout.points;
+			fe.points_version = layout.version;
+			fe.luid = e->get_instance_id();
+			fe.radial_velocity = e->get_radial_velocity();
+			const float reach = e->get_radius() + 0.5f * width;
+			extent = xf.xform(AABB(Vector3(-reach, -reach, -reach), Vector3(2 * reach, 2 * reach, 2 * reach)));
+		}
 		const Vector3 half = e->get_size() * 0.5f;
 		const Vector3 vel = e->get_velocity();
 		const Vector3 body_vel = e->get_motion_velocity();
@@ -377,14 +477,24 @@ void PhysXFlow3D::_gather_emitters(LocalVector<FlowBackend::Emitter> &r_emitters
 		fe.smoke = e->get_smoke();
 		fe.divergence = e->get_divergence();
 		fe.couple_rate = e->get_couple_rate();
-		fe.collision = e->is_collision();
+		fe.collision = e->is_collision() && !e->is_point_shape();
 		r_emitters.push_back(fe);
 		if (first) {
-			r_emitter_bounds = AABB(xf.origin, Vector3());
+			r_emitter_bounds = extent;
 			first = false;
 		} else {
-			r_emitter_bounds.expand_to(xf.origin);
+			r_emitter_bounds.merge_with(extent);
 		}
+	}
+	// Forget the layouts of emitters that no longer feed this flow.
+	LocalVector<ObjectID> stale;
+	for (const KeyValue<ObjectID, StepQueue::PointLayout> &kv : steps->layouts) {
+		if (kv.value.gather != steps->gather) {
+			stale.push_back(kv.key);
+		}
+	}
+	for (const ObjectID &id : stale) {
+		steps->layouts.erase(id);
 	}
 }
 

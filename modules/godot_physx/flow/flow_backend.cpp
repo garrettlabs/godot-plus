@@ -80,6 +80,30 @@ NvFlowFloat4x4 to_flow_matrix(const float p_basis[3][3], const float p_origin[3]
 	return m;
 }
 
+// What an emitter puts into the gas (not a solid). Every emitter type Flow has
+// takes these fields.
+template <typename T>
+void set_emission(T &r_params, const Emitter &p_emitter) {
+	// Velocity in the emitter's own frame (a nozzle), rotated -- not scaled
+	// twice -- by the rotation part alone.
+	r_params.velocityIsWorldSpace = NV_FLOW_FALSE;
+	const float no_origin[3] = { 0, 0, 0 };
+	r_params.localToWorldVelocity = to_flow_matrix(p_emitter.basis, no_origin, false);
+	r_params.velocity = { p_emitter.velocity[0], p_emitter.velocity[1], p_emitter.velocity[2] };
+	r_params.temperature = p_emitter.temperature;
+	r_params.fuel = p_emitter.fuel;
+	r_params.burn = p_emitter.burn;
+	r_params.smoke = p_emitter.smoke;
+	r_params.divergence = p_emitter.divergence;
+	const float c = p_emitter.couple_rate;
+	r_params.coupleRateVelocity = c;
+	r_params.coupleRateTemperature = c;
+	r_params.coupleRateFuel = p_emitter.fuel > 0.0f ? c : 0.0f;
+	r_params.coupleRateSmoke = p_emitter.smoke > 0.0f ? c : 0.0f;
+	r_params.coupleRateBurn = p_emitter.burn > 0.0f ? c : 0.0f;
+	r_params.coupleRateDivergence = p_emitter.divergence != 0.0f ? c : 0.0f;
+}
+
 template <typename T>
 void set_channels(T &r_params, const Emitter &p_emitter) {
 	const float s = UNITS_PER_METER;
@@ -104,24 +128,7 @@ void set_channels(T &r_params, const Emitter &p_emitter) {
 		r_params.allocationScale = 0.0f;
 		return;
 	}
-	// Velocity in the emitter's own frame (a nozzle), rotated -- not scaled
-	// twice -- by the rotation part alone.
-	r_params.velocityIsWorldSpace = NV_FLOW_FALSE;
-	const float no_origin[3] = { 0, 0, 0 };
-	r_params.localToWorldVelocity = to_flow_matrix(p_emitter.basis, no_origin, false);
-	r_params.velocity = { p_emitter.velocity[0], p_emitter.velocity[1], p_emitter.velocity[2] };
-	r_params.temperature = p_emitter.temperature;
-	r_params.fuel = p_emitter.fuel;
-	r_params.burn = p_emitter.burn;
-	r_params.smoke = p_emitter.smoke;
-	r_params.divergence = p_emitter.divergence;
-	const float c = p_emitter.couple_rate;
-	r_params.coupleRateVelocity = c;
-	r_params.coupleRateTemperature = c;
-	r_params.coupleRateFuel = p_emitter.fuel > 0.0f ? c : 0.0f;
-	r_params.coupleRateSmoke = p_emitter.smoke > 0.0f ? c : 0.0f;
-	r_params.coupleRateBurn = p_emitter.burn > 0.0f ? c : 0.0f;
-	r_params.coupleRateDivergence = p_emitter.divergence != 0.0f ? c : 0.0f;
+	set_emission(r_params, p_emitter);
 }
 
 } // namespace
@@ -142,8 +149,19 @@ struct Grid {
 	NvFlowGridRenderLayerParams render = NvFlowGridRenderLayerParams_default;
 	std::vector<NvFlowEmitterSphereParams> spheres;
 	std::vector<NvFlowEmitterBoxParams> boxes;
+	std::vector<NvFlowEmitterPointParams> points;
 	std::vector<NvFlowUint8 *> sphere_ptrs;
 	std::vector<NvFlowUint8 *> box_ptrs;
+	std::vector<NvFlowUint8 *> point_ptrs;
+	// Per point emitter: its layout (held so the positions stay valid while
+	// Flow points at them), the positions as Flow reads them, and this step's
+	// velocities.
+	struct PointArrays {
+		std::shared_ptr<const std::vector<float>> layout;
+		std::vector<NvFlowFloat3> positions;
+		std::vector<NvFlowFloat3> velocities;
+	};
+	std::vector<PointArrays> point_arrays;
 	NvFlowGridRenderData render_data = {};
 	const NvFlowGridRenderDataNanoVdbReadback *readback = nullptr;
 	double last_time = 0.0; // params snapshot the renderer maps
@@ -152,7 +170,7 @@ struct Grid {
 	NvFlowUint8 *sim_ptr = nullptr;
 	NvFlowUint8 *offscreen_ptr = nullptr;
 	NvFlowUint8 *render_ptr = nullptr;
-	NvFlowDatabaseTypeSnapshot types[5] = {};
+	NvFlowDatabaseTypeSnapshot types[6] = {};
 	NvFlowGridParamsDescSnapshot snapshot = {};
 	// The colormap the offscreen params point at.
 	float colormap_x[Settings::COLORMAP_POINTS] = {};
@@ -393,9 +411,61 @@ bool grid_step(Grid *p_grid, double p_time, float p_delta, const Settings &p_set
 
 	p_grid->spheres.clear();
 	p_grid->boxes.clear();
+	p_grid->points.clear();
+	int point_emitters = 0;
+	for (int i = 0; i < p_emitter_count; i++) {
+		if (p_emitters[i].shape == Emitter::SHAPE_POINTS && p_emitters[i].points && p_emitters[i].points->size() >= 6) {
+			point_emitters++;
+		}
+	}
+	// Sized once per step: the arrays below must not move once Flow has their
+	// addresses. An emitter keeps its slot (and its uploaded positions) while
+	// the emitters before it stay the same.
+	p_grid->point_arrays.resize(point_emitters);
+	int point_index = 0;
 	for (int i = 0; i < p_emitter_count; i++) {
 		const Emitter &e = p_emitters[i];
-		if (e.shape == Emitter::SHAPE_BOX) {
+		if (e.shape == Emitter::SHAPE_POINTS) {
+			if (!e.points || e.points->size() < 6) {
+				continue;
+			}
+			Grid::PointArrays &arrays = p_grid->point_arrays[point_index++];
+			const std::vector<float> &layout = *e.points;
+			const size_t count = layout.size() / 6;
+			if (arrays.layout != e.points) {
+				arrays.layout = e.points;
+				arrays.positions.resize(count);
+				for (size_t k = 0; k < count; k++) {
+					arrays.positions[k] = { layout[k * 6 + 0], layout[k * 6 + 1], layout[k * 6 + 2] };
+				}
+			}
+			// The uniform velocity plus the radial push, in the emitter's frame
+			// (localToWorldVelocity applies its rotation and scale, as for the
+			// other shapes).
+			arrays.velocities.resize(count);
+			for (size_t k = 0; k < count; k++) {
+				arrays.velocities[k] = {
+					e.velocity[0] + layout[k * 6 + 3] * e.radial_velocity,
+					e.velocity[1] + layout[k * 6 + 4] * e.radial_velocity,
+					e.velocity[2] + layout[k * 6 + 5] * e.radial_velocity,
+				};
+			}
+			NvFlowEmitterPointParams pt = NvFlowEmitterPointParams_default;
+			pt.luid = e.luid;
+			pt.localToWorld = to_flow_matrix(e.basis, e.origin, true);
+			set_emission(pt, e);
+			pt.allocateMask = NV_FLOW_TRUE;
+			pt.pointPositions = arrays.positions.data();
+			pt.pointPositionCount = count;
+			// Flow scans the points for blocks to allocate again only when this
+			// (or the transform) changes; 0 would mean every step. The uploads
+			// themselves happen every step whatever the versions say.
+			pt.pointPositionVersion = e.points_version;
+			pt.pointVelocities = arrays.velocities.data();
+			pt.pointVelocityCount = count;
+			pt.pointVelocityVersion = p_grid->version + 1; // this step's
+			p_grid->points.push_back(pt);
+		} else if (e.shape == Emitter::SHAPE_BOX) {
 			NvFlowEmitterBoxParams b = NvFlowEmitterBoxParams_default;
 			b.position = { 0.0f, 0.0f, 0.0f };
 			b.halfSize = { e.half_size[0], e.half_size[1], e.half_size[2] };
@@ -419,6 +489,10 @@ bool grid_step(Grid *p_grid, double p_time, float p_delta, const Settings &p_set
 	for (size_t i = 0; i < p_grid->boxes.size(); i++) {
 		p_grid->box_ptrs[i] = (NvFlowUint8 *)&p_grid->boxes[i];
 	}
+	p_grid->point_ptrs.resize(p_grid->points.size());
+	for (size_t i = 0; i < p_grid->points.size(); i++) {
+		p_grid->point_ptrs[i] = (NvFlowUint8 *)&p_grid->points[i];
+	}
 
 	p_grid->sim_ptr = (NvFlowUint8 *)&p_grid->simulate;
 	p_grid->offscreen_ptr = (NvFlowUint8 *)&p_grid->offscreen;
@@ -429,7 +503,8 @@ bool grid_step(Grid *p_grid, double p_time, float p_delta, const Settings &p_set
 	p_grid->types[2] = { v, &NvFlowGridEmitterBoxParams_NvFlowReflectDataType, p_grid->box_ptrs.data(), p_grid->box_ptrs.size() };
 	p_grid->types[3] = { v, &NvFlowGridOffscreenLayerParams_NvFlowReflectDataType, &p_grid->offscreen_ptr, 1u };
 	p_grid->types[4] = { v, &NvFlowGridRenderLayerParams_NvFlowReflectDataType, &p_grid->render_ptr, 1u };
-	p_grid->snapshot = { { v, p_grid->types, 5u }, p_time, p_delta, NV_FLOW_FALSE, nullptr, 0u };
+	p_grid->types[5] = { v, &NvFlowGridEmitterPointParams_NvFlowReflectDataType, p_grid->point_ptrs.data(), p_grid->point_ptrs.size() };
+	p_grid->snapshot = { { v, p_grid->types, 6u }, p_time, p_delta, NV_FLOW_FALSE, nullptr, 0u };
 	NvFlowGridParamsInterface &params_if = p_grid->loader->gridParamsInterface;
 	params_if.commitParams(p_grid->params, &p_grid->snapshot);
 

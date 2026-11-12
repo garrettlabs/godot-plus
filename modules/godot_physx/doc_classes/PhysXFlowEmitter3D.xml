@@ -6,6 +6,7 @@
 	<description>
 		Feeds the [PhysXFlow3D] its [member flow] path points at; with [member flow] empty it feeds the scene's only [PhysXFlow3D] (a warning asks you to set [member flow] when there are several). So it can live anywhere -- inside a vehicle scene by its wheels, say, following the vehicle -- and a level with several flows sets [member flow] per instance.
 		With [member collision] on, it's a solid instead: the gas inside it takes on its motion and holds nothing. Physics bodies near the gas are solids already (see [member PhysXFlow3D.collide_with_bodies]); this is for shapes that aren't physics bodies.
+		The [constant SHAPE_RING] and [constant SHAPE_SHELL] shapes emit from [member point_count] points on a circle or a sphere and push the gas outward from the center at [member radial_velocity]: an expanding ring or shell of smoke (a shockwave, a dust ring kicked up by a landing) from one node. Enable the emitter for a few physics ticks for a pulse. A short pulse needs a high [member couple_rate] (around [code]100[/code]) to put visible smoke and speed into the gas. The gas is incompressible: outward velocity alone carries a ring only part of the way (on 5 cm cells, 6 m/s took a ring of 0.5 m to about 0.7 m and no further) and does not grow a closed shell at all, because nothing flows in to take the gas's place. To make it travel, give the points a [member divergence] as well (e.g. [code]10[/code]) and set how far it goes with [member PhysXFlow3D.divergence_fade].
 	</description>
 	<tutorials>
 	</tutorials>
@@ -28,10 +29,10 @@
 			Burn amount put in (combustion that is already under way).
 		</member>
 		<member name="collision" type="bool" setter="set_collision" getter="is_collision" default="false">
-			Make this a solid the gas flows around, moving with this node, instead of a source.
+			Make this a solid the gas flows around, moving with this node, instead of a source. Not supported by [constant SHAPE_RING] and [constant SHAPE_SHELL], which always emit (a configuration warning says so).
 		</member>
 		<member name="couple_rate" type="float" setter="set_couple_rate" getter="get_couple_rate" default="2.0">
-			How strongly the emitter drives the gas toward its values (per second).
+			How strongly the emitter drives the gas toward its values (per second). The default drives the gas slowly, which suits an emitter left on; a pulse a few ticks long needs a rate around [code]100[/code] to put visible smoke and speed into the gas, with any shape.
 		</member>
 		<member name="divergence" type="float" setter="set_divergence" getter="get_divergence" default="0.0">
 			Expansion put in: positive pushes gas outward, as from an explosion.
@@ -45,8 +46,17 @@
 		<member name="fuel" type="float" setter="set_fuel" getter="get_fuel" default="0.0">
 			Fuel put in; it burns above the flow's [member PhysXFlow3D.ignition_temperature], making heat and smoke.
 		</member>
+		<member name="point_count" type="int" setter="set_point_count" getter="get_point_count" default="64">
+			How many points [constant SHAPE_RING] and [constant SHAPE_SHELL] emit from (4 to 4096), spread evenly over the circle or the sphere. More points make a rounder ring; with too few for the circumference, the gas comes out as separate puffs.
+		</member>
+		<member name="point_width" type="float" setter="set_point_width" getter="get_point_width" default="0.0">
+			How wide each point of [constant SHAPE_RING] and [constant SHAPE_SHELL] emits, in meters, in this node's frame. NVIDIA Flow spreads a point over the cells around it, about two cells across; a wider point is emitted as several, one cell apart, filling a ball this wide (a width of [code]0.2[/code] at 5 cm cells is 19 points per point; past about 65,000 points per emitter they are spaced wider than a cell). [code]0[/code] uses two cells of the flow's [member PhysXFlow3D.cell_size], one Flow point per point.
+		</member>
+		<member name="radial_velocity" type="float" setter="set_radial_velocity" getter="get_radial_velocity" default="4.0">
+			For [constant SHAPE_RING] and [constant SHAPE_SHELL]: the speed, in m/s, at which each point pushes the gas outward, away from the center along its own direction (in this node's frame, so the node's rotation and scale apply as they do to [member velocity]). [member velocity] is added on top, e.g. to make a ring that also drifts up. Negative values pull inward.
+		</member>
 		<member name="radius" type="float" setter="set_radius" getter="get_radius" default="0.5">
-			Sphere radius in meters.
+			Sphere radius in meters; for [constant SHAPE_RING] and [constant SHAPE_SHELL], the radius of the circle or sphere the points lie on.
 		</member>
 		<member name="shape" type="int" setter="set_shape" getter="get_shape" enum="PhysXFlowEmitter3D.Shape" default="0">
 			The emitter's shape.
@@ -70,6 +80,12 @@
 		</constant>
 		<constant name="SHAPE_BOX" value="1" enum="Shape">
 			A box of [member size].
+		</constant>
+		<constant name="SHAPE_RING" value="2" enum="Shape">
+			[member point_count] points on a circle of [member radius] in this node's local XZ plane (its normal is the local Y axis), each pushing the gas outward along the circle's radius at [member radial_velocity].
+		</constant>
+		<constant name="SHAPE_SHELL" value="3" enum="Shape">
+			[member point_count] points spread evenly over a sphere of [member radius], each pushing the gas outward at [member radial_velocity].
 		</constant>
 	</constants>
 </class>
