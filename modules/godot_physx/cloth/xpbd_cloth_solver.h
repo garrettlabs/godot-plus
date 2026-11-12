@@ -96,6 +96,21 @@ public:
 	void set_pin_target(int p_vertex, const Vector3 &p_world_pos);
 	void clear_pin_target(int p_vertex);
 
+	// A vertex kept on the outer side of a plane that moves with a body: dot(x - (point + velocity * t), normal) >= 0
+	// for t from the start of the step. Enforced in every substep after the distance constraints, so a contact
+	// found at the end of one step is part of the solve of the next and does not leave stretched edges behind.
+	struct ContactPlane {
+		int vertex = 0;
+		Vector3 point;
+		Vector3 normal;
+		Vector3 velocity;
+	};
+	LocalVector<ContactPlane> &contacts_mut() { return contacts; }
+	// Position-only passes over the distance constraints and the contact planes (at their current place), for after
+	// an outside collision pass has moved vertices: spreads the push to the neighbors instead of leaving stretched
+	// edges until the next step. Velocities are not changed. p_dt is the step length the compliance is scaled by.
+	void relax(int p_iterations, float p_dt);
+
 	// Advance the simulation. p_wind is a world-space air velocity.
 	void step(float p_dt, const Vector3 &p_gravity, const Vector3 &p_wind);
 
@@ -129,6 +144,7 @@ private:
 	LocalVector<Vector3> pin_target; // NaN component == no target
 	LocalVector<DistanceConstraint> constraints;
 	LocalVector<int> indices;
+	LocalVector<ContactPlane> contacts;
 
 	int cols = 0;
 	int rows = 0;

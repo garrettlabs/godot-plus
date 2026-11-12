@@ -415,10 +415,14 @@ void PhysXCloth3D::_step(double p_delta) {
 	touched_moving_body = false;
 	if (collision_enabled) {
 		_collide();
+		if (!solver.contacts_mut().is_empty()) {
+			solver.relax(4, (float)p_delta);
+		}
 	} else {
 		bodies_near = false;
 		moving_bodies_near = false;
 		near_moving.clear();
+		solver.contacts_mut().clear();
 	}
 	_update_mesh();
 
@@ -525,6 +529,7 @@ void PhysXCloth3D::_set_sleeping(bool p_sleeping) {
 		}
 		sleep_bounds = _solver_bounds();
 		sleep_bodies = near_moving;
+		solver.contacts_mut().clear();
 	} else {
 		sleep_bodies.clear();
 	}
@@ -621,6 +626,8 @@ void PhysXCloth3D::_collide() {
 
 	// One query over the whole cloth first: with no body in its bounds no vertex can touch anything, so the
 	// per-vertex pass is skipped.
+	LocalVector<XPBDClothSolver::ContactPlane> &contacts = solver.contacts_mut();
+	contacts.clear();
 	_query_bounds(_solver_bounds());
 	if (!bodies_near) {
 		return;
@@ -641,6 +648,7 @@ void PhysXCloth3D::_collide() {
 	LocalVector<Vector3> &pos = solver.positions_mut();
 	LocalVector<Vector3> &vel = solver.velocities_mut();
 	const int n = solver.vertex_count();
+	const bool physx_contract = GodotPhysXServer3D::get_singleton() != nullptr; // only exists when PhysX is the engine
 	for (int i = 0; i < n; i++) {
 		if (solver.is_pinned(i)) {
 			continue;
@@ -650,25 +658,51 @@ void PhysXCloth3D::_collide() {
 		if (!ss->rest_info(params, &info)) {
 			continue;
 		}
-		// The PhysX backend reports info.normal as the direction to push the query
-		// shape out and info.point as (center - normal * penetration), so the
-		// penetration depth is just the projection back onto the normal.
+		// info.normal is the direction to push the query shape out with both backends. The PhysX backend reports
+		// info.point as (center - normal * penetration), so the projection back onto the normal is the depth;
+		// other backends (Jolt) report the contact point on the collider's surface, where the depth is the radius
+		// minus the center's distance from that point along the normal.
 		const Vector3 push_dir = info.normal;
-		const float depth = (pos[i] - info.point).dot(push_dir);
+		const float along = (pos[i] - info.point).dot(push_dir);
+		const float depth = physx_contract ? along : radius - along;
 		if (depth > 0.0f) {
-			if (moving_bodies_near && !touched_moving_body) {
+			bool moving = false;
+			if (moving_bodies_near) {
 				for (uint32_t j = 0; j < near_moving.size(); j++) {
 					if (near_moving[j].rid == info.rid) {
-						touched_moving_body = true;
+						moving = true;
 						break;
 					}
 				}
 			}
 			pos[i] += push_dir * (depth + 0.001f);
+			XPBDClothSolver::ContactPlane plane;
+			plane.vertex = i;
+			plane.point = pos[i];
+			plane.normal = push_dir;
 			const float vn = vel[i].dot(push_dir);
 			Vector3 v_tangent = vel[i] - push_dir * vn;
-			v_tangent *= (1.0f - friction); // Coulomb-style sliding friction
-			vel[i] = v_tangent + push_dir * MAX(vn, 0.0f); // no inward velocity
+			if (!moving) {
+				contacts.push_back(plane);
+				v_tangent *= (1.0f - friction); // Coulomb-style sliding friction
+				vel[i] = v_tangent + push_dir * MAX(vn, 0.0f); // no inward velocity
+				continue;
+			}
+			// A moving body carries the vertex: its normal velocity becomes at least the body's at the contact (so
+			// the next step does not move it back inside), and friction pulls its sliding velocity toward the
+			// body's surface velocity. The cloth never pushes the body back.
+			touched_moving_body = true;
+			Vector3 body_v = info.linear_velocity;
+			PhysicsDirectBodyState3D *bs = ps->body_get_direct_state(info.rid);
+			if (bs) {
+				body_v = bs->get_velocity_at_local_position(info.point - bs->get_transform().origin);
+			}
+			const float body_vn = body_v.dot(push_dir);
+			const Vector3 body_vt = body_v - push_dir * body_vn;
+			plane.velocity = push_dir * body_vn;
+			contacts.push_back(plane);
+			v_tangent = body_vt + (v_tangent - body_vt) * (1.0f - friction);
+			vel[i] = v_tangent + push_dir * MAX(vn, body_vn);
 		}
 	}
 }

@@ -66,7 +66,7 @@
 			A cloth in a non-zero wind never sleeps, even a steady one, because the wind keeps moving it. Only the CPU solver sleeps.
 		</member>
 		<member name="collision_enabled" type="bool" setter="set_collision_enabled" getter="is_collision_enabled" default="true">
-			When enabled, each vertex is pushed out of any physics body it overlaps each step. One shape query over the cloth's bounds comes first; when no body is in them the per-vertex queries are skipped.
+			When enabled, each vertex is pushed out of any physics body it overlaps each step. A vertex touching a body that is not static also takes on that body's velocity at the contact along the contact normal (at least), and [member collision_friction] pulls its sliding velocity toward the body's, so a moving character or platform carries the cloth with it. The coupling is one-way: the cloth never pushes bodies. A body fast enough to pass through the cloth between two physics ticks is not seen. One shape query over the cloth's bounds comes first; when no body is in them the per-vertex queries are skipped.
 		</member>
 		<member name="collision_friction" type="float" setter="set_friction" getter="get_friction" default="0.4">
 			Fraction of a vertex's sideways velocity removed while it is touching a surface, from 0 (frictionless) to 1. Higher values stop the cloth sliding and spinning once it settles.

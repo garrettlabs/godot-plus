@@ -43,6 +43,7 @@ void XPBDClothSolver::clear() {
 	pin_target.clear();
 	constraints.clear();
 	indices.clear();
+	contacts.clear();
 	cols = 0;
 	rows = 0;
 	rest_volume = 0.0f;
@@ -319,6 +320,7 @@ void XPBDClothSolver::reset(const Transform3D &p_xform) {
 		prev[i] = positions[i];
 		velocities[i] = Vector3();
 	}
+	contacts.clear();
 }
 
 void XPBDClothSolver::set_pinned(int p_vertex, bool p_pinned) {
@@ -383,6 +385,43 @@ void XPBDClothSolver::_apply_aero(float p_dt, const Vector3 &p_wind) {
 	}
 }
 
+void XPBDClothSolver::relax(int p_iterations, float p_dt) {
+	if (positions.is_empty() || p_dt <= 0.0f) {
+		return;
+	}
+	const float sdt = p_dt / (float)MAX(settings.substeps, 1);
+	for (int it = 0; it < p_iterations; it++) {
+		for (uint32_t ci = 0; ci < constraints.size(); ci++) {
+			const DistanceConstraint &c = constraints[ci];
+			const float wa = inv_mass[c.a];
+			const float wb = inv_mass[c.b];
+			const float w = wa + wb;
+			if (w == 0.0f) {
+				continue;
+			}
+			Vector3 d = positions[c.a] - positions[c.b];
+			const float len = d.length();
+			if (len < 1.0e-9f) {
+				continue;
+			}
+			d /= len;
+			const float dlambda = -(len - c.rest) / (w + c.compliance / (sdt * sdt));
+			positions[c.a] += d * (dlambda * wa);
+			positions[c.b] -= d * (dlambda * wb);
+		}
+		for (uint32_t ci = 0; ci < contacts.size(); ci++) {
+			const ContactPlane &c = contacts[ci];
+			if (inv_mass[c.vertex] == 0.0f) {
+				continue;
+			}
+			const float dd = (positions[c.vertex] - c.point).dot(c.normal);
+			if (dd < 0.0f) {
+				positions[c.vertex] -= c.normal * dd;
+			}
+		}
+	}
+}
+
 void XPBDClothSolver::step(float p_dt, const Vector3 &p_gravity, const Vector3 &p_wind) {
 	const int n = positions.size();
 	if (n == 0 || p_dt <= 0.0f) {
@@ -430,6 +469,21 @@ void XPBDClothSolver::step(float p_dt, const Vector3 &p_gravity, const Vector3 &
 			const float dlambda = -constraint / (w + alpha);
 			positions[c.a] += d * (dlambda * wa);
 			positions[c.b] -= d * (dlambda * wb);
+		}
+
+		// Contact planes from the previous step's collision pass, moved with their bodies.
+		if (!contacts.is_empty()) {
+			const float t = sdt * (float)(s + 1);
+			for (uint32_t ci = 0; ci < contacts.size(); ci++) {
+				const ContactPlane &c = contacts[ci];
+				if (inv_mass[c.vertex] == 0.0f) {
+					continue;
+				}
+				const float d = (positions[c.vertex] - (c.point + c.velocity * t)).dot(c.normal);
+				if (d < 0.0f) {
+					positions[c.vertex] -= c.normal * d;
+				}
+			}
 		}
 
 		// Optional closed-mesh volume/pressure constraint (soft bodies).
