@@ -1444,6 +1444,7 @@ void RenderForwardClustered::_update_volumetric_fog(Ref<RenderSceneBuffersRD> p_
 		settings.directional_shadow_depth = RendererRD::LightStorage::get_singleton()->directional_shadow_get_texture();
 		settings.directional_light_buffer = RendererRD::LightStorage::get_singleton()->get_directional_light_buffer();
 		settings.rt_tlas = rb_data->rt_tlas;
+		settings.rt_layers = rb_data->rt_layer_buffer;
 		settings.rt_instance_mask = RT_INSTANCE_MASK_SHADOW_CASTER;
 
 		settings.vfog = fog;

@@ -353,6 +353,10 @@ void Fog::free_fog_shader() {
 		RD::get_singleton()->free_rid(rt_dummy_tlas);
 		rt_dummy_tlas = RID();
 	}
+	if (rt_dummy_layers.is_valid()) {
+		RD::get_singleton()->free_rid(rt_dummy_layers);
+		rt_dummy_layers = RID();
+	}
 	if (volumetric_fog.params_ubo.is_valid()) {
 		RD::get_singleton()->free_rid(volumetric_fog.params_ubo);
 	}
@@ -1023,16 +1027,27 @@ void Fog::volumetric_fog_update(const VolumetricFogSettings &p_settings, const P
 		if (rt_shadows) {
 			// Binding 22 exists only in the shader variants built with ray traced shadows.
 			RID tlas = p_settings.rt_tlas;
-			if (tlas.is_null()) {
+			RID layers = p_settings.rt_layers;
+			if (tlas.is_null() || layers.is_null()) {
 				// No scene was built this frame, so no light is traced, but the set must still match the shader.
 				if (rt_dummy_tlas.is_null()) {
 					rt_dummy_tlas = RD::get_singleton()->tlas_create(1, RD::ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT);
 					RD::get_singleton()->tlas_build(rt_dummy_tlas, Span<RD::AccelerationStructureInstance>());
 				}
+				if (rt_dummy_layers.is_null()) {
+					// 256 light masks (RT_LIGHT_MASK_SLOTS) and one instance, all bits set.
+					Vector<uint8_t> data;
+					data.resize((256 + 1) * sizeof(uint32_t));
+					memset(data.ptrw(), 0xFF, data.size());
+					rt_dummy_layers = RD::get_singleton()->storage_buffer_create(data.size(), data);
+				}
 				tlas = rt_dummy_tlas;
+				layers = rt_dummy_layers;
 			}
 			fog->rt_tlas_in_sets = p_settings.rt_tlas;
 			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_ACCELERATION_STRUCTURE, 22, tlas));
+			// Replaced together with the acceleration structure, so tracking that covers this binding too.
+			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 23, layers));
 		}
 
 		if (fog->copy_uniform_set.is_valid() && RD::get_singleton()->uniform_set_is_valid(fog->copy_uniform_set)) {

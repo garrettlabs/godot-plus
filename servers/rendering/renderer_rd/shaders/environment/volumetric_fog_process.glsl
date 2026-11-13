@@ -230,10 +230,17 @@ layout(set = 0, binding = 21) uniform texture2D area_light_atlas;
 
 #if defined(USE_RT_SHADOWS) && !defined(MODE_COPY)
 layout(set = 0, binding = 22) uniform accelerationStructureEXT tlas;
+// The layer table of tlas, for lights whose shadow caster mask excludes some casters.
+layout(set = 0, binding = 23, std430) restrict readonly buffer RTLayers {
+	uint data[];
+}
+rt_layers;
+#define RT_CASTER_TLAS tlas
+#include "../rt_caster_mask_inc.glsl"
 
 // Lights with ray traced shadows have no shadow map: trace from the point to the light instead.
 // Both positions are in view space; the scene's acceleration structure is in world space.
-float rt_shadow_visibility(vec3 p_view_pos, vec3 p_light_view_pos, float p_near) {
+float rt_shadow_visibility(vec3 p_view_pos, vec3 p_light_view_pos, float p_near, uint p_slot) {
 	vec3 origin = mat3(params.cam_rotation) * p_view_pos + params.cam_origin;
 	vec3 target = mat3(params.cam_rotation) * p_light_view_pos + params.cam_origin;
 	vec3 to_target = target - origin;
@@ -241,11 +248,7 @@ float rt_shadow_visibility(vec3 p_view_pos, vec3 p_light_view_pos, float p_near)
 	// A light closer than p_near gets a ray of length 0, which cannot hit anything. No early return: with one
 	// in front of the query the shader compiler turned the result into "never occluded" on some drivers.
 	float t_max = max(dist - p_near, 0.0);
-	rayQueryEXT rq;
-	rayQueryInitializeEXT(rq, tlas, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT, params.rt_instance_mask, origin, 0.0, to_target / dist, t_max);
-	while (rayQueryProceedEXT(rq)) {
-	}
-	bool hit = rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT;
+	bool hit = rt_caster_ray_hit(origin, to_target / dist, t_max, params.rt_instance_mask, rt_light_caster_mask(p_slot));
 	return hit ? 0.0 : 1.0;
 }
 #endif
@@ -543,7 +546,7 @@ void main() {
 						if (omni_lights.data[light_index].rt_shadow_index != 0xFFFFFFFFu) {
 							// Ray traced: there is nothing in the shadow atlas for this light.
 							traced = true;
-							float rt_visible = rt_shadow_visibility(view_pos, light_pos, max(0.005 / omni_lights.data[light_index].inv_radius, omni_lights.data[light_index].size));
+							float rt_visible = rt_shadow_visibility(view_pos, light_pos, max(0.005 / omni_lights.data[light_index].inv_radius, omni_lights.data[light_index].size), omni_lights.data[light_index].rt_shadow_index);
 							shadow_attenuation = mix(1.0 - omni_lights.data[light_index].shadow_opacity, 1.0, rt_visible);
 						}
 #endif
@@ -626,7 +629,7 @@ void main() {
 						if (spot_lights.data[light_index].rt_shadow_index != 0xFFFFFFFFu) {
 							// Ray traced: there is nothing in the shadow atlas for this light.
 							traced = true;
-							float rt_visible = rt_shadow_visibility(view_pos, light_pos, max(0.005 / spot_lights.data[light_index].inv_radius, spot_lights.data[light_index].size));
+							float rt_visible = rt_shadow_visibility(view_pos, light_pos, max(0.005 / spot_lights.data[light_index].inv_radius, spot_lights.data[light_index].size), spot_lights.data[light_index].rt_shadow_index);
 							shadow_attenuation = mix(1.0 - spot_lights.data[light_index].shadow_opacity, 1.0, rt_visible);
 						}
 #endif
