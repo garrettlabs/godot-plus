@@ -32,6 +32,7 @@
 
 #include "core/io/resource.h"
 #include "core/templates/self_list.h"
+#include "scene/resources/material_shader_cache.h"
 #include "scene/resources/shader.h"
 #include "servers/rendering/rendering_server_enums.h"
 
@@ -411,9 +412,11 @@ private:
 	struct ShaderData {
 		RID shader;
 		int users = 0;
+		List<MaterialKey>::Element *unused_elem = nullptr;
 	};
 
 	static HashMap<MaterialKey, ShaderData, MaterialKey> shader_map;
+	static MaterialShaderLRU<MaterialKey> shader_lru;
 	static Mutex shader_map_mutex;
 
 	MaterialKey current_key;

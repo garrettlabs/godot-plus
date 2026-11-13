@@ -7,6 +7,12 @@ semantic version: tags are `vMAJOR.MINOR.PATCH`, and the binary reports
 upstream base stays visible in the string. The two earlier pre-releases used
 `v4.8-beta-plus.N`. See README.md for the scheme.
 
+## Unreleased (next: v1.5.1)
+
+### Generated material shaders stay cached after their last user
+
+Assigning a new `ParticleProcessMaterial` (and a `BaseMaterial3D` or `CanvasItemMaterial` with settings no live material shares) cost 8 to 17 ms every time, because the generated shader was freed with its last user and generated and compiled again for the next material with the same settings. This is upstream Godot behavior. Now an unused shader stays in its class's map on a least-recently-unused list; a lookup reuses it, and the oldest unused ones beyond 64 per class are freed, as are all of them at class shutdown. One-shot effects that build their material when they start no longer hitch after the first use of each distinct set of settings. Files: `scene/resources/material_shader_cache.h`, `particle_process_material.*`, `material.*`, `canvas_item_material.*`.
+
 ## v1.5.0 — 2026-11-11
 
 Upstream base: unchanged, `cafc17a192`. A MINOR release: an expanding ring or shell of smoke from one NVIDIA Flow emitter with divergence fade and damping settings, sleeping, impulses and moving-body collision for the CPU cloth, ray traced shadows on transparent surfaces, and three fixes (particles freed under the threaded cull, volumetric fog behind a spot light's caster, SoftBody3D on threaded PhysX). Same package layout as v1.4.0 (runtime DLLs in the root and beside the templates). D3D12 ray tracing still needs the ray-tracing NIR library (`mesa_libs=`), attached again as a release asset.

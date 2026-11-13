@@ -153,10 +153,12 @@ private:
 	struct ShaderData {
 		RID shader;
 		int users = 0;
+		List<MaterialKey>::Element *unused_elem = nullptr;
 	};
 
 	static Mutex shader_map_mutex;
 	static HashMap<MaterialKey, ShaderData, MaterialKey> shader_map;
+	static MaterialShaderLRU<MaterialKey> shader_lru;
 	static RBSet<String> min_max_properties;
 
 	MaterialKey current_key;

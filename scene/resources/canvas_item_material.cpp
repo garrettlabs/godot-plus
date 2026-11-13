@@ -38,6 +38,7 @@
 Mutex CanvasItemMaterial::material_mutex;
 SelfList<CanvasItemMaterial>::List CanvasItemMaterial::dirty_materials;
 HashMap<CanvasItemMaterial::MaterialKey, CanvasItemMaterial::ShaderData, CanvasItemMaterial::MaterialKey> CanvasItemMaterial::shader_map;
+MaterialShaderLRU<CanvasItemMaterial::MaterialKey> CanvasItemMaterial::shader_lru;
 CanvasItemMaterial::ShaderNames *CanvasItemMaterial::shader_names = nullptr;
 
 void CanvasItemMaterial::init_shaders() {
@@ -51,6 +52,8 @@ void CanvasItemMaterial::init_shaders() {
 void CanvasItemMaterial::finish_shaders() {
 	dirty_materials.clear();
 
+	shader_lru.clear(shader_map);
+
 	memdelete(shader_names);
 	shader_names = nullptr;
 }
@@ -61,20 +64,12 @@ void CanvasItemMaterial::_update_shader() {
 		return; //no update required in the end
 	}
 
-	if (shader_map.has(current_key)) {
-		shader_map[current_key].users--;
-		if (shader_map[current_key].users == 0) {
-			//deallocate shader, as it's no longer in use
-			RS::get_singleton()->free_rid(shader_map[current_key].shader);
-			shader_map.erase(current_key);
-		}
-	}
+	shader_lru.release(shader_map, current_key);
 
 	current_key = mk;
 
-	if (shader_map.has(mk)) {
-		RS::get_singleton()->material_set_shader(_get_material(), shader_map[mk].shader);
-		shader_map[mk].users++;
+	if (ShaderData *v = shader_lru.acquire(shader_map, mk)) {
+		RS::get_singleton()->material_set_shader(_get_material(), v->shader);
 		return;
 	}
 
@@ -298,12 +293,7 @@ CanvasItemMaterial::~CanvasItemMaterial() {
 	ERR_FAIL_NULL(RenderingServer::get_singleton());
 
 	if (shader_map.has(current_key)) {
-		shader_map[current_key].users--;
-		if (shader_map[current_key].users == 0) {
-			//deallocate shader, as it's no longer in use
-			RS::get_singleton()->free_rid(shader_map[current_key].shader);
-			shader_map.erase(current_key);
-		}
+		shader_lru.release(shader_map, current_key);
 
 		RS::get_singleton()->material_set_shader(_get_material(), RID());
 	}
