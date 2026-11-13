@@ -7,6 +7,10 @@ semantic version: tags are `vMAJOR.MINOR.PATCH`, and the binary reports
 upstream base stays visible in the string. The two earlier pre-releases used
 `v4.8-beta-plus.N`. See README.md for the scheme.
 
+## Unreleased (next: v1.5.1)
+
+- **vulkan-respv-skip-ray-query** — with ray tracing on, a launch no longer prints dozens of `OpTypeAccelerationStructureKHR is not supported yet.` / `OpTypeRayQueryKHR ...` / `OpTypeForwardPointer ...` lines to stderr (issue #30; 72 in a bare project on v1.5.0). The Vulkan driver ran the bundled re-spirv optimizer over every shader stage; re-spirv does not support ray queries, acceleration structures or buffer references, prints that line from the library and gives up, and the driver fell back to the unoptimised SPIR-V. The driver now reads the module's `OpCapability` instructions first and does not hand a module that declares `RayQueryKHR`, `AccelerationStructureKHR` or `PhysicalStorageBufferAddresses` to re-spirv at all, with one `--verbose` line per skipped stage. The shaders and their pipelines are the same as before (those modules never had specialization-constant inlining); only the print and the wasted parse are gone.
+
 ## v1.5.0 — 2026-11-11
 
 Upstream base: unchanged, `cafc17a192`. A MINOR release: an expanding ring or shell of smoke from one NVIDIA Flow emitter with divergence fade and damping settings, sleeping, impulses and moving-body collision for the CPU cloth, ray traced shadows on transparent surfaces, and three fixes (particles freed under the threaded cull, volumetric fog behind a spot light's caster, SoftBody3D on threaded PhysX). Same package layout as v1.4.0 (runtime DLLs in the root and beside the templates). D3D12 ray tracing still needs the ray-tracing NIR library (`mesa_libs=`), attached again as a release asset.

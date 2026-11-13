@@ -4482,7 +4482,35 @@ RDD::ShaderID RenderingDeviceDriverVulkan::shader_create_from_container(const Re
 
 		shader_info.original_stage_size.push_back(decoded_spirv.size());
 
+		// re-spirv does not support ray queries, acceleration structures or buffer references: it prints
+		// "is not supported yet." to stderr for each module and gives up, so skip those modules up front.
+		uint32_t respv_unsupported_capability = 0;
 		if (use_respv) {
+			const uint32_t *spirv_words = (const uint32_t *)decoded_spirv.ptr();
+			const uint32_t spirv_word_count = decoded_spirv.size() / sizeof(uint32_t);
+			uint32_t word_index = 5; // Skip the header.
+			while (word_index + 1 < spirv_word_count) {
+				const uint32_t instruction = spirv_words[word_index];
+				const uint32_t opcode = instruction & 0xFFFF;
+				const uint32_t word_count = instruction >> 16;
+				if (opcode != 17 || word_count != 2) { // OpCapability.
+					break;
+				}
+				const uint32_t capability = spirv_words[word_index + 1];
+				if (capability == 4472 || capability == 5341 || capability == 5347) { // RayQueryKHR, AccelerationStructureKHR, PhysicalStorageBufferAddresses.
+					respv_unsupported_capability = capability;
+					break;
+				}
+				word_index += word_count;
+			}
+		}
+
+		if (respv_unsupported_capability != 0) {
+			print_verbose(vformat("re-spirv skipped for shader stage %s: the module declares capability %s, which it does not support.", String(SHADER_STAGE_NAMES[shader_refl.stages_vector[i]]), respv_unsupported_capability == 4472 ? "RayQueryKHR" : (respv_unsupported_capability == 5341 ? "AccelerationStructureKHR" : "PhysicalStorageBufferAddresses")));
+			if (store_respv) {
+				shader_info.respv_stage_shaders.push_back(respv::Shader());
+			}
+		} else if (use_respv) {
 			const bool inline_data = store_respv || (RESPV_ONLY_INLINE_SHADERS_WITH_SPEC_CONSTANTS == 0);
 			respv::Shader respv_shader(decoded_spirv.ptr(), decoded_spirv.size(), inline_data);
 			if (respv_shader.empty()) {
@@ -7095,7 +7123,6 @@ void *RenderingDeviceDriverVulkan::command_buffer_get_native_handle(CommandBuffe
 }
 
 void RenderingDeviceDriverVulkan::on_device_lost() const {
-
 	if (device_functions.GetDeviceFaultInfoEXT == nullptr) {
 		_err_print_error(FUNCTION_STR, __FILE__, __LINE__, "VK_EXT_device_fault not available.");
 		return;
