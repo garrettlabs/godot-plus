@@ -505,7 +505,7 @@ void SceneShaderForwardClustered::ShaderData::_create_pipeline(PipelineKey p_pip
 	RID pipeline = RD::get_singleton()->render_pipeline_create(shader_rid, p_pipeline_key.framebuffer_format_id, p_pipeline_key.vertex_format_id, primitive_rd, raster_state, multisample_state, depth_stencil_state, blend_state, 0, 0, specialization_constants);
 	ERR_FAIL_COND(pipeline.is_null());
 
-	pipeline_hash_map.add_compiled_pipeline(p_pipeline_key.hash(), pipeline);
+	pipeline_hash_map.add_compiled_pipeline(p_pipeline_key.hash(), pipeline, p_pipeline_key.ubershader);
 }
 
 RD::PolygonCullMode SceneShaderForwardClustered::ShaderData::get_cull_mode_from_cull_variant(CullVariant p_cull_variant) {
@@ -1031,8 +1031,9 @@ void fragment() {
 void SceneShaderForwardClustered::set_default_specialization(const ShaderSpecialization &p_specialization) {
 	default_specialization = p_specialization;
 
+	// Ubershader pipelines don't use the default specialization, keep them so draws never wait on a compile.
 	for (ShaderData &shader_data : shader_list) {
-		shader_data.pipeline_hash_map.clear_pipelines();
+		shader_data.pipeline_hash_map.clear_specialized_pipelines();
 	}
 }
 

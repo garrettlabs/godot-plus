@@ -7,6 +7,10 @@ semantic version: tags are `vMAJOR.MINOR.PATCH`, and the binary reports
 upstream base stays visible in the string. The two earlier pre-releases used
 `v4.8-beta-plus.N`. See README.md for the scheme.
 
+## Unreleased (next: v1.6.1)
+
+- **pipeline-quality-change-background** (issue #35) — Changing a shader quality setting (the positional or directional soft shadow filter quality, the decal or light projector filter, the lightmap bicubic filter, legacy fog blending) froze the frame after the call: every compiled pipeline was freed, ubershaders included, so the next draw compiled each drawn shader's ubershader at draw time and waited for it, 107 to 230 ms warm and 1.4 to 8.7 s on a cold driver cache in a scene with 32 to 96 distinct materials. This is upstream Godot behavior. Now only the pipelines that use the default specialization are freed (the ubershader pipelines do not depend on it and are kept), so the next frame draws with the ubershaders already compiled while the new specialized pipelines compile in the background, as for a newly placed instance. Applies to Forward+ and Mobile. No new setting.
+
 ## v1.6.0 — 2026-11-12
 
 Upstream base: unchanged, `cafc17a192`. A MINOR release: ray traced shadows honor `Light3D.shadow_caster_mask` on Vulkan and D3D12, a Flow emitter can clear smoke (`couple_zero_channels`), and three fixes (generated material shaders kept after their last user, Flow scattering lights chosen by where the gas is, the re-spirv lines with ray tracing on). Same package layout as v1.5.0 (runtime DLLs in the root and beside the templates). D3D12 ray tracing still needs the ray-tracing NIR library (`mesa_libs=`), attached again as a release asset.
