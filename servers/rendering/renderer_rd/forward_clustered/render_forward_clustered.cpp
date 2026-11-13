@@ -173,6 +173,10 @@ void RenderForwardClustered::RenderBufferDataForwardClustered::free_data() {
 		rt_tlas = RID();
 		rt_tlas_capacity = 0;
 	}
+	if (rt_layer_buffer.is_valid()) {
+		RD::get_singleton()->free_rid(rt_layer_buffer);
+		rt_layer_buffer = RID();
+	}
 
 	if (rt_shadow_buffer.is_valid()) {
 		RD::get_singleton()->free_rid(rt_shadow_buffer);
@@ -2187,6 +2191,8 @@ void RenderForwardClustered::_update_raytracing_scene(const RenderDataRD *p_rend
 	uint32_t builds = 0;
 	uint32_t refits = 0;
 	rt_tlas_instances.clear();
+	rt_layer_data.resize(RT_LIGHT_MASK_SLOTS); // Light masks, filled after the instances.
+	uint32_t caster_layers = 0; // Every layer some shadow caster in the scene is on.
 	rt_reflection_instances.clear();
 	rt_reflection_materials.clear();
 	rt_reflection_material_index.clear();
@@ -2276,6 +2282,9 @@ void RenderForwardClustered::_update_raytracing_scene(const RenderDataRD *p_rend
 			RD::AccelerationStructureInstance rt_instance;
 			rt_instance.blas = blas;
 			rt_instance.mask = mask;
+			if (mask & RT_INSTANCE_MASK_SHADOW_CASTER) {
+				caster_layers |= inst->layer_mask;
+			}
 			if (inst->data->cast_double_sided_shadows) {
 				rt_instance.flags.set_flag(RD::ACCELERATION_STRUCTURE_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT);
 			}
@@ -2295,6 +2304,7 @@ void RenderForwardClustered::_update_raytracing_scene(const RenderDataRD *p_rend
 					rt_instance.transform = inst->transform * xform * position_transform;
 					rt_instance.id = rt_tlas_instances.size() & 0xFFFFFF;
 					rt_tlas_instances.push_back(rt_instance);
+					rt_layer_data.push_back(inst->layer_mask);
 					if (p_reflection_tables) {
 						rt_reflection_instances.push_back(reflection_record);
 					}
@@ -2303,6 +2313,7 @@ void RenderForwardClustered::_update_raytracing_scene(const RenderDataRD *p_rend
 				rt_instance.transform = inst->transform * position_transform;
 				rt_instance.id = rt_tlas_instances.size() & 0xFFFFFF;
 				rt_tlas_instances.push_back(rt_instance);
+				rt_layer_data.push_back(inst->layer_mask);
 				if (p_reflection_tables) {
 					rt_reflection_instances.push_back(reflection_record);
 				}
@@ -2320,7 +2331,30 @@ void RenderForwardClustered::_update_raytracing_scene(const RenderDataRD *p_rend
 			p_rb_data->rt_tlas_capacity = 0;
 			ERR_FAIL_MSG("Failed to create the ray tracing scene (TLAS).");
 		}
+		// Replaced together with the TLAS, so sets that track the TLAS (fog) see the new table too.
+		if (p_rb_data->rt_layer_buffer.is_valid()) {
+			RD::get_singleton()->free_rid(p_rb_data->rt_layer_buffer);
+		}
+		p_rb_data->rt_layer_buffer = RD::get_singleton()->storage_buffer_create((RT_LIGHT_MASK_SLOTS + p_rb_data->rt_tlas_capacity) * sizeof(uint32_t));
 	}
+
+	// Light caster masks by slot. A mask that keeps every layer a caster is on excludes nothing: 0xFFFFFFFF tells the
+	// shaders to keep the opaque first-hit query for that light.
+	{
+		const LocalVector<RID> &rt_lights = RendererRD::LightStorage::get_singleton()->get_rt_shadow_lights();
+		for (uint32_t i = 0; i < RT_LIGHT_MASK_SLOTS; i++) {
+			uint32_t light_mask = 0xFFFFFFFF;
+			if (i < rt_lights.size()) {
+				RendererRD::LightStorage *light_storage = RendererRD::LightStorage::get_singleton();
+				const uint32_t caster_mask = light_storage->light_get_shadow_caster_mask(light_storage->light_instance_get_base_light(rt_lights[i]));
+				if (caster_layers & ~caster_mask) {
+					light_mask = caster_mask;
+				}
+			}
+			rt_layer_data[i] = light_mask;
+		}
+	}
+	RD::get_singleton()->buffer_update(p_rb_data->rt_layer_buffer, 0, rt_layer_data.size() * sizeof(uint32_t), rt_layer_data.ptr());
 
 	Error err = RD::get_singleton()->tlas_build(p_rb_data->rt_tlas, Span<RD::AccelerationStructureInstance>(rt_tlas_instances.ptr(), rt_tlas_instances.size()));
 	ERR_FAIL_COND_MSG(err != OK, "Failed to build the ray tracing scene (TLAS).");
@@ -2383,7 +2417,7 @@ void RenderForwardClustered::_process_rt_shadows(const RenderDataRD *p_render_da
 	RD::get_singleton()->draw_command_begin_label("Ray Traced Shadows");
 	const Size2i size = rb->get_internal_size();
 	const uint32_t soft_samples = CLAMP(GLOBAL_GET_CACHED(int, "rendering/raytracing/shadows/soft_shadow_samples"), 1, 64);
-	rt_shadows->trace(p_rb_data->rt_tlas, rb->get_depth_texture(0), p_rb_data->get_normal_roughness(0), p_rb_data->rt_shadow_buffer, size, p_render_data->scene_data->view_projection[0], p_render_data->scene_data->cam_transform, rt_shadow_lights, RT_INSTANCE_MASK_SHADOW_CASTER, soft_samples, RSG::rasterizer->get_frame_number());
+	rt_shadows->trace(p_rb_data->rt_tlas, p_rb_data->rt_layer_buffer, rb->get_depth_texture(0), p_rb_data->get_normal_roughness(0), p_rb_data->rt_shadow_buffer, size, p_render_data->scene_data->view_projection[0], p_render_data->scene_data->cam_transform, rt_shadow_lights, RT_INSTANCE_MASK_SHADOW_CASTER, soft_samples, RSG::rasterizer->get_frame_number());
 	RD::get_singleton()->draw_command_end_label();
 }
 
@@ -6141,6 +6175,12 @@ RenderForwardClustered::RenderForwardClustered() {
 	ss_effects = memnew(RendererRD::SSEffects);
 	rt_shadow_default_buffer = RD::get_singleton()->storage_buffer_create(RendererRD::RTShadows::ENTRY_SIZE);
 	if (RendererRD::MeshStorage::get_singleton()->is_raytracing_enabled()) {
+		LocalVector<uint32_t> default_layers;
+		default_layers.resize(RT_LIGHT_MASK_SLOTS + 1);
+		for (uint32_t &layers : default_layers) {
+			layers = 0xFFFFFFFF;
+		}
+		rt_layer_default_buffer = RD::get_singleton()->storage_buffer_create(default_layers.size() * sizeof(uint32_t), Span<uint8_t>((const uint8_t *)default_layers.ptr(), default_layers.size() * sizeof(uint32_t)));
 		rt_shadows = memnew(RendererRD::RTShadows);
 		rt_ao = memnew(RendererRD::RTAmbientOcclusion);
 		rt_reflections = memnew(RendererRD::RTReflections);
@@ -6173,6 +6213,9 @@ RenderForwardClustered::~RenderForwardClustered() {
 	RD::get_singleton()->free_rid(rt_shadow_default_buffer);
 	if (rt_dummy_tlas.is_valid()) {
 		RD::get_singleton()->free_rid(rt_dummy_tlas);
+	}
+	if (rt_layer_default_buffer.is_valid()) {
+		RD::get_singleton()->free_rid(rt_layer_default_buffer);
 	}
 
 	if (taa != nullptr) {

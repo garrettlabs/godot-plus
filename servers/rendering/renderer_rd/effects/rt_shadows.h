@@ -80,7 +80,8 @@ public:
 	RTShadows();
 	~RTShadows();
 
-	void trace(RID p_tlas, RID p_depth, RID p_normal_roughness, RID p_visibility_buffer, const Size2i &p_size, const Projection &p_projection, const Transform3D &p_cam_transform, const LocalVector<Light> &p_lights, uint32_t p_instance_mask, uint32_t p_soft_samples, uint32_t p_frame);
+	// p_layers: the renderer's layer table (light caster masks, then instance layers; see rt_caster_mask_inc.glsl).
+	void trace(RID p_tlas, RID p_layers, RID p_depth, RID p_normal_roughness, RID p_visibility_buffer, const Size2i &p_size, const Projection &p_projection, const Transform3D &p_cam_transform, const LocalVector<Light> &p_lights, uint32_t p_instance_mask, uint32_t p_soft_samples, uint32_t p_frame);
 };
 
 } // namespace RendererRD

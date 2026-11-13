@@ -24,7 +24,7 @@ struct Light {
 	float cos_spot_angle; // -2.0 for omni lights.
 	float size; // Light radius for soft shadows, 0.0 for hard shadows.
 	float near; // Geometry closer to the light than this does not occlude it (the light's own fixture).
-	uint slot;
+	uint slot; // Also the light's entry in the layer table (rt_light_caster_mask()).
 	uint pad;
 };
 
@@ -51,6 +51,14 @@ layout(set = 0, binding = 5, std140) uniform Params {
 }
 params;
 
+layout(set = 0, binding = 6, std430) restrict readonly buffer RTLayers {
+	uint data[];
+}
+rt_layers;
+
+#define RT_CASTER_TLAS tlas
+#include "../rt_caster_mask_inc.glsl"
+
 #define MAX_ENTRIES 6u
 
 float hash(vec2 p) {
@@ -58,18 +66,12 @@ float hash(vec2 p) {
 	return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
 }
 
-bool occluded(vec3 origin, vec3 target, float near) {
+bool occluded(vec3 origin, vec3 target, float near, uint caster_mask) {
 	vec3 to_target = target - origin;
-	float dist = length(to_target);
-	float t_max = dist - near;
-	if (t_max <= 0.0) {
-		return false;
-	}
-	rayQueryEXT rq;
-	rayQueryInitializeEXT(rq, tlas, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT, params.instance_mask, origin, 0.0, to_target / dist, t_max);
-	while (rayQueryProceedEXT(rq)) {
-	}
-	return rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT;
+	float dist = max(length(to_target), 1e-6);
+	// A light closer than near gets a ray of length 0, which hits nothing. No early return before the query.
+	float t_max = max(dist - near, 0.0);
+	return rt_caster_ray_hit(origin, to_target / dist, t_max, params.instance_mask, caster_mask);
 }
 
 void main() {
@@ -115,6 +117,7 @@ void main() {
 			continue; // Outside the spot cone.
 		}
 
+		uint caster_mask = rt_light_caster_mask(light.slot);
 		float lit;
 		if (light.size > 0.0 && params.soft_samples > 1u) {
 			// Points on the disc of the light's sphere that faces the pixel, rotated per pixel.
@@ -127,11 +130,11 @@ void main() {
 				float r = sqrt((float(s) + 0.5) / float(params.soft_samples)) * light.size;
 				float a = float(s) * 2.39996323 + rotation;
 				vec3 target = light.position + (t * cos(a) + b * sin(a)) * r;
-				lit += occluded(origin, target, light.near) ? 0.0 : 1.0;
+				lit += occluded(origin, target, light.near, caster_mask) ? 0.0 : 1.0;
 			}
 			lit /= float(params.soft_samples);
 		} else {
-			lit = occluded(origin, light.position, light.near) ? 0.0 : 1.0;
+			lit = occluded(origin, light.position, light.near, caster_mask) ? 0.0 : 1.0;
 		}
 
 		uint entry = ((light.slot + 1u) << 8u) | uint(clamp(lit, 0.0, 1.0) * 255.0 + 0.5);

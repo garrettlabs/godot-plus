@@ -132,6 +132,9 @@ public:
 		// Ray tracing scene (TLAS) of this view, rebuilt every frame when ray tracing is enabled.
 		RID rt_tlas;
 		uint32_t rt_tlas_capacity = 0;
+		// Layer table of rt_tlas, created with it: RT_LIGHT_MASK_SLOTS light caster masks, then one uint of render
+		// layers per TLAS instance (see rt_caster_mask_inc.glsl).
+		RID rt_layer_buffer;
 
 		// Per pixel ray traced shadow entries (RTShadows::ENTRY_SIZE bytes each), at the internal resolution.
 		RID rt_shadow_buffer;
@@ -206,6 +209,10 @@ private:
 	/* Ray tracing scene */
 
 	LocalVector<RD::AccelerationStructureInstance> rt_tlas_instances;
+	// Light caster masks by ray traced shadow slot, then the render layers of each TLAS instance (by custom index).
+	// Must match RT_LIGHT_MASK_SLOTS in rt_caster_mask_inc.glsl; a light slot is below 256 (max_positional_lights).
+	static constexpr uint32_t RT_LIGHT_MASK_SLOTS = 256;
+	LocalVector<uint32_t> rt_layer_data;
 	LocalVector<Pair<uint32_t, uint8_t>> rt_surface_masks; // Surface index, instance mask.
 	uint64_t rt_build_budget_frame = UINT64_MAX;
 	uint32_t rt_blas_builds_this_frame = 0;
@@ -238,6 +245,7 @@ private:
 	RendererRD::RTShadows *rt_shadows = nullptr; // Only with ray tracing enabled: its shader needs ray queries.
 	RID rt_shadow_default_buffer; // Bound when a view has no ray traced shadows.
 	RID rt_dummy_tlas; // Empty scene for binding 40 of render pass sets that have none (transparent receivers).
+	RID rt_layer_default_buffer; // Layer table bound beside rt_dummy_tlas: every light mask excludes nothing.
 	RID _get_rt_dummy_tlas();
 	LocalVector<RendererRD::RTShadows::Light> rt_shadow_lights;
 
