@@ -142,6 +142,9 @@ struct ScatterSource {
 	int layer_and_level = 0;
 	float world_min[3] = {};
 	float world_max[3] = {};
+	// The sparse layer's bounds (world_min/world_max) hold gas: set whenever the
+	// grid has any, even when the scattering pass cannot run.
+	bool has_bounds = false;
 };
 
 // Draws a grid on RenderingDevice into Godot's frame with Flow's own ray

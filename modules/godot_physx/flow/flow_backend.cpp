@@ -298,6 +298,19 @@ uint64_t grid_render_rd(Grid *p_grid, const float p_view[16], const float p_proj
 		NvFlowGridRenderData data = {};
 		p_grid->loader->gridInterface.getRenderData(p_grid->context, p_grid->grid, &data);
 		const NvFlowSparseParams &sp = data.sparseParams;
+		if (sp.layerCount > 0 && sp.layers[0].numLocations > 0) {
+			const NvFlowSparseLayerParams &gas = sp.layers[0];
+			r_scatter->has_bounds = true;
+			r_scatter->world_min[0] = gas.worldMin.x;
+			r_scatter->world_min[1] = gas.worldMin.y;
+			r_scatter->world_min[2] = gas.worldMin.z;
+			r_scatter->world_max[0] = gas.worldMax.x;
+			r_scatter->world_max[1] = gas.worldMax.y;
+			r_scatter->world_max[2] = gas.worldMax.z;
+			r_scatter->block_size_world[0] = gas.blockSizeWorld.x;
+			r_scatter->block_size_world[1] = gas.blockSizeWorld.y;
+			r_scatter->block_size_world[2] = gas.blockSizeWorld.z;
+		}
 		if (data.densityTexture != nullptr && data.sparseBuffer != nullptr && sp.levelCount > 0 && sp.layerCount > 0) {
 			static_assert(sizeof(NvFlowSparseLevelParams) == sizeof(r_scatter->level), "NvFlowSparseLevelParams changed size");
 			memcpy(r_scatter->level, &sp.levels[0], sizeof(r_scatter->level)); // density is level 0

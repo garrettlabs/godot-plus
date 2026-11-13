@@ -7,6 +7,10 @@ semantic version: tags are `vMAJOR.MINOR.PATCH`, and the binary reports
 upstream base stays visible in the string. The two earlier pre-releases used
 `v4.8-beta-plus.N`. See README.md for the scheme.
 
+## Unreleased (next: v1.5.1)
+
+- **Flow light scattering picks its lights by where the gas is** (`flow-scatter-gas-bounds`, issue #31). `PhysXFlow3D` with `light_scattering` chose its `scattering_max_lights` omni and spot lights by distance to the enabled emitters' center, or to the node when none was enabled, so gas left by a short emitter pulse lost its lights when the emitter was disabled (in a scene with more lights than the cap) and got them back when another emitter switched on nearby. The render side now publishes the bounds of the grid's active blocks every frame it draws, and each candidate light is scored by its energy over the squared distance to the nearest point of those bounds (grown by one block) and accepted when it reaches them. The emitter/node rule remains only until the first frame has been drawn, and while the grid holds no gas. No new properties.
+
 ## v1.5.0 — 2026-11-11
 
 Upstream base: unchanged, `cafc17a192`. A MINOR release: an expanding ring or shell of smoke from one NVIDIA Flow emitter with divergence fade and damping settings, sleeping, impulses and moving-body collision for the CPU cloth, ray traced shadows on transparent surfaces, and three fixes (particles freed under the threaded cull, volumetric fog behind a spot light's caster, SoftBody3D on threaded PhysX). Same package layout as v1.4.0 (runtime DLLs in the root and beside the templates). D3D12 ray tracing still needs the ray-tracing NIR library (`mesa_libs=`), attached again as a release asset.
