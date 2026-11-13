@@ -494,6 +494,7 @@ void PhysXFlow3D::_gather_emitters(LocalVector<FlowBackend::Emitter> &r_emitters
 		fe.smoke = e->get_smoke();
 		fe.divergence = e->get_divergence();
 		fe.couple_rate = e->get_couple_rate();
+		fe.couple_zero_channels = e->get_couple_zero_channels();
 		fe.collision = e->is_collision() && !e->is_point_shape();
 		r_emitters.push_back(fe);
 		if (first) {

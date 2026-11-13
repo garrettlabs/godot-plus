@@ -75,6 +75,7 @@ struct Emitter {
 	float smoke = 1.0f;
 	float divergence = 0.0f;
 	float couple_rate = 2.0f;
+	bool couple_zero_channels = false; // couple smoke/fuel/burn/divergence even at 0
 	// SHAPE_POINTS: 6 floats per point, its position (local meters) and the
 	// unit direction radial_velocity pushes along (local); shared, not copied,
 	// between the steps that use the same layout. points_version changes when

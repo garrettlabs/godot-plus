@@ -98,10 +98,12 @@ void set_emission(T &r_params, const Emitter &p_emitter) {
 	const float c = p_emitter.couple_rate;
 	r_params.coupleRateVelocity = c;
 	r_params.coupleRateTemperature = c;
-	r_params.coupleRateFuel = p_emitter.fuel > 0.0f ? c : 0.0f;
-	r_params.coupleRateSmoke = p_emitter.smoke > 0.0f ? c : 0.0f;
-	r_params.coupleRateBurn = p_emitter.burn > 0.0f ? c : 0.0f;
-	r_params.coupleRateDivergence = p_emitter.divergence != 0.0f ? c : 0.0f;
+	// A channel at 0 is normally left alone; couple_zero_channels drives it to 0.
+	const bool z = p_emitter.couple_zero_channels;
+	r_params.coupleRateFuel = (z || p_emitter.fuel > 0.0f) ? c : 0.0f;
+	r_params.coupleRateSmoke = (z || p_emitter.smoke > 0.0f) ? c : 0.0f;
+	r_params.coupleRateBurn = (z || p_emitter.burn > 0.0f) ? c : 0.0f;
+	r_params.coupleRateDivergence = (z || p_emitter.divergence != 0.0f) ? c : 0.0f;
 }
 
 template <typename T>
