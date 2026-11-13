@@ -7,9 +7,9 @@ spot shadows, ray-traced ambient occlusion and reflections, on Vulkan and D3D12)
 physics backend with GPU dynamics, Blast destruction, Flow gas with ring and shell pulse emitters and a
 CPU cloth that sleeps and takes impulses, a Windows export option that keeps the runtime libraries in a
 subfolder, and profiling zones for Tracy.
-`main` tracks upstream master; every addition is kept as its own merged topic branch so the
-set rebases onto new upstream releases. The patches are maintained here and are not
-submitted upstream.
+`main` tracks upstream master; every addition lands as its own `--no-ff` merge, so each patch
+stays a separable unit that rebases onto new upstream releases. The patches are maintained
+here and are not submitted upstream.
 
 Upstream's own README follows below under *Godot Engine*.
 
@@ -46,8 +46,7 @@ Bugs that also exist in upstream Godot and are fixed on `main` (numbers are issu
 |---|---|
 | `main` | The engine. Upstream `master` plus every patch, merged `--no-ff`; builds and releases come from here. Upstream is pulled in at chosen commits, not continuously, so a build of `main` is reproducible. |
 | `master` | Mirror of `godotengine/godot` master. Never patched. |
-| `streamline-dlss`, `contact-shadows-positional`, `physx5-module`, `profiling-zones`, `plus-versioning`, `static-shadow-cache`, `rt-acceleration-structures`, `rt-shadows`, `d3d12-raytracing`, `rt-ambient-occlusion`, `rt-reflections`, `rt-view-consistent-hits`, `rt-reflection-quality`, `windows-library-subfolder`, `flow-radial-emitter`, `cloth-sleep-and-impulse`, `rt-transparent-shadows` | One patch each, merged into `main` once they build and pass testing. Cut from `master` when they stand alone; the later ray tracing branches and `windows-library-subfolder` build on earlier patches and are cut from the branch or the `main` commit they extend. |
-| `nav-async-sync`, `render-thread-shutdown`, `dlss-frame-token`, `fix/flow-colliders-in-physics-step`, `multimesh-interpolation-thread`, `instance-free-material-order`, `rt-off-cost`, `rt-fog-shadows`, `sdfgi-rt-binding`, `shader-baker-ray-query`, `d3d12-baker-ray-query`, `d3d12-shader-cache-version`, `fix-light-projector-matrix`, `particles-view-axis-threaded-cull`, `fog-spot-shadow-linear`, `physx-softbody-threaded` | Fix branches, merged into `main` the same way. A fix is cut from the branch it fixes when the code only exists there (`dlss-frame-token` from `streamline-dlss`, `rt-off-cost` from `rt-shadows`, `d3d12-baker-ray-query` from `main`), otherwise from `master`. |
+| topic branches | One patch each, cut from `master` (or from the patch they build on when the code only exists there), merged into `main` with `--no-ff` once they build and pass testing. A topic branch is pushed with the release that carries it and deleted once that release is published, so the branch list stays short: the merge commits on `main` name every patch (`git log --merges --first-parent main`), and `CHANGELOG-plus.md` lists each one under its release with its branch name and commit. A patch is still cleanly reviewable as the diff of its merge commit (`git show -m <merge>` or `git diff <merge>^1 <merge>`). |
 
 ## Building (Windows)
 
