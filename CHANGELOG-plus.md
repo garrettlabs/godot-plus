@@ -7,6 +7,10 @@ semantic version: tags are `vMAJOR.MINOR.PATCH`, and the binary reports
 upstream base stays visible in the string. The two earlier pre-releases used
 `v4.8-beta-plus.N`. See README.md for the scheme.
 
+## Unreleased (next: v1.5.1)
+
+- **flow-couple-zero** — NVIDIA Flow: `PhysXFlowEmitter3D.couple_zero_channels` (default off). An emitter drove smoke, fuel, burn and divergence toward its values only while the value was non-zero, so there was no way to clear smoke from a region: an emitter with `smoke` 0 left it alone (3 to 4 % change in 4 ticks) and a small value such as 0.01 left that value behind, also in empty cells. With the property on, those four channels are coupled at `couple_rate` whatever their value, so `smoke` 0 clears the smoke inside the shape and writes nothing into empty cells. Off keeps the old rule, so existing scenes are unchanged. The docs of `divergence` now say that a positive divergence moves gas outward but does not thin it (Flow conserves density).
+
 ## v1.5.0 — 2026-11-11
 
 Upstream base: unchanged, `cafc17a192`. A MINOR release: an expanding ring or shell of smoke from one NVIDIA Flow emitter with divergence fade and damping settings, sleeping, impulses and moving-body collision for the CPU cloth, ray traced shadows on transparent surfaces, and three fixes (particles freed under the threaded cull, volumetric fog behind a spot light's caster, SoftBody3D on threaded PhysX). Same package layout as v1.4.0 (runtime DLLs in the root and beside the templates). D3D12 ray tracing still needs the ray-tracing NIR library (`mesa_libs=`), attached again as a release asset.

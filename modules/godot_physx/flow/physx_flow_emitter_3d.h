@@ -67,6 +67,7 @@ private:
 	float smoke = 1.0f;
 	float divergence = 0.0f;
 	float couple_rate = 2.0f;
+	bool couple_zero_channels = false;
 	bool collision = false;
 	// SHAPE_RING / SHAPE_SHELL.
 	int point_count = 64;
@@ -107,6 +108,8 @@ public:
 	float get_divergence() const { return divergence; }
 	void set_couple_rate(float p_v) { couple_rate = MAX(p_v, 0.0f); }
 	float get_couple_rate() const { return couple_rate; }
+	void set_couple_zero_channels(bool p_v) { couple_zero_channels = p_v; }
+	bool get_couple_zero_channels() const { return couple_zero_channels; }
 	void set_collision(bool p_collision);
 	bool is_collision() const { return collision; }
 	void set_point_count(int p_count);

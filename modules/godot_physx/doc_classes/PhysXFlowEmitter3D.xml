@@ -34,8 +34,11 @@
 		<member name="couple_rate" type="float" setter="set_couple_rate" getter="get_couple_rate" default="2.0">
 			How strongly the emitter drives the gas toward its values (per second). The default drives the gas slowly, which suits an emitter left on; a pulse a few ticks long needs a rate around [code]100[/code] to put visible smoke and speed into the gas, with any shape.
 		</member>
+		<member name="couple_zero_channels" type="bool" setter="set_couple_zero_channels" getter="get_couple_zero_channels" default="false">
+			By default the emitter drives [member smoke], [member fuel], [member burn] and [member divergence] toward their values only while the value is not zero, so an emitter with [member smoke] at [code]0[/code] leaves the smoke in its shape alone (and one with a small value such as [code]0.01[/code] drives it to that value, in empty cells too). With this on, those four channels are driven toward their values at [member couple_rate] whatever the value, so an emitter with [member smoke] [code]0[/code] clears the smoke inside its shape, like a scrubber: a hole or a channel in a standing cloud. Cells outside the shape and empty cells are untouched. Temperature and velocity are always coupled.
+		</member>
 		<member name="divergence" type="float" setter="set_divergence" getter="get_divergence" default="0.0">
-			Expansion put in: positive pushes gas outward, as from an explosion.
+			Expansion put in: positive pushes gas outward, as from an explosion. It moves the gas but does not thin it: Flow conserves density, so the gas piles up around the source and the density at the source stays where it was. To clear smoke from a region, enable [member couple_zero_channels] and set [member smoke] to [code]0[/code].
 		</member>
 		<member name="enabled" type="bool" setter="set_enabled" getter="is_enabled" default="true">
 			Whether the emitter is active.
