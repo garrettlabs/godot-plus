@@ -50,8 +50,19 @@ private:
 	CreationFunction creation_function = nullptr;
 	Mutex *compilations_mutex = nullptr;
 	uint32_t *compilations = nullptr;
-	RBMap<uint32_t, RID> hash_map;
-	LocalVector<Pair<uint32_t, RID>> compiled_queue;
+	struct Entry {
+		RID pipeline;
+		bool ubershader = false;
+	};
+
+	struct CompiledPipeline {
+		uint32_t hash = 0;
+		RID pipeline;
+		bool ubershader = false;
+	};
+
+	RBMap<uint32_t, Entry> hash_map;
+	LocalVector<CompiledPipeline> compiled_queue;
 	Mutex compiled_queue_mutex;
 	RBSet<uint32_t> compilation_set;
 	HashMap<uint32_t, WorkerThreadPool::TaskID> compilation_tasks;
@@ -63,9 +74,9 @@ private:
 
 		{
 			MutexLock lock(compiled_queue_mutex);
-			for (const Pair<uint32_t, RID> &pair : compiled_queue) {
-				hash_map[pair.first] = pair.second;
-				hashes_added.push_back(pair.first);
+			for (const CompiledPipeline &compiled : compiled_queue) {
+				hash_map[compiled.hash] = { compiled.pipeline, compiled.ubershader };
+				hashes_added.push_back(compiled.hash);
 			}
 
 			compiled_queue.clear();
@@ -100,9 +111,10 @@ private:
 	}
 
 public:
-	void add_compiled_pipeline(uint32_t p_hash, RID p_pipeline) {
+	// Ubershader pipelines don't depend on the default specialization, so they survive clear_specialized_pipelines().
+	void add_compiled_pipeline(uint32_t p_hash, RID p_pipeline, bool p_ubershader = false) {
 		compiled_queue_mutex.lock();
-		compiled_queue.push_back({ p_hash, p_pipeline });
+		compiled_queue.push_back({ p_hash, p_pipeline, p_ubershader });
 		compiled_queue_mutex.unlock();
 	}
 
@@ -177,7 +189,7 @@ public:
 
 	// Retrieve a pipeline. It'll return an empty pipeline if it's not available yet, but it'll be guaranteed to succeed if 'wait for compilation' is true and stall as necessary. Source is just an optional number to aid debugging.
 	RID get_pipeline(const Key &p_key, uint32_t p_key_hash, bool p_wait_for_compilation, RSE::PipelineSource p_source) {
-		RBMap<uint32_t, RID>::Element *e = hash_map.find(p_key_hash);
+		typename RBMap<uint32_t, Entry>::Element *e = hash_map.find(p_key_hash);
 
 		if (e == nullptr) {
 			// Check if there's any new pipelines that need to be added and try again. This method triggers a mutex lock.
@@ -196,17 +208,17 @@ public:
 
 				e = hash_map.find(p_key_hash);
 				if (e != nullptr) {
-					return e->value();
+					return e->value().pipeline;
 				} else {
 					// Pipeline could not be compiled due to an internal error. Store an empty RID so compilation is not attempted again.
-					hash_map[p_key_hash] = RID();
+					hash_map[p_key_hash] = {};
 					return RID();
 				}
 			} else {
 				return RID();
 			}
 		} else {
-			return e->value();
+			return e->value().pipeline;
 		}
 	}
 
@@ -215,12 +227,33 @@ public:
 		_wait_for_all_pipelines();
 		_add_new_pipelines_to_map();
 
-		for (KeyValue<uint32_t, RID> entry : hash_map) {
-			RD::get_singleton()->free_rid(entry.value);
+		for (KeyValue<uint32_t, Entry> entry : hash_map) {
+			RD::get_singleton()->free_rid(entry.value.pipeline);
 		}
 
 		hash_map.clear();
 		compilation_set.clear();
+	}
+
+	// Delete all cached pipelines except the ubershader ones. Can stall if background compilation is in progress.
+	void clear_specialized_pipelines() {
+		_wait_for_all_pipelines();
+		_add_new_pipelines_to_map();
+
+		MutexLock local_lock(local_mutex);
+		compilation_set.clear();
+
+		typename RBMap<uint32_t, Entry>::Element *e = hash_map.front();
+		while (e != nullptr) {
+			typename RBMap<uint32_t, Entry>::Element *next = e->next();
+			if (e->value().ubershader) {
+				compilation_set.insert(e->key());
+			} else {
+				RD::get_singleton()->free_rid(e->value().pipeline);
+				hash_map.erase(e);
+			}
+			e = next;
+		}
 	}
 
 	// Set the external pipeline compilations array to increase the counters on every time a pipeline is compiled.
