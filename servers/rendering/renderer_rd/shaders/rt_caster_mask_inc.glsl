@@ -19,23 +19,34 @@ uint rt_light_caster_mask(uint p_slot) {
 	return rt_layers.data[min(p_slot, RT_LIGHT_MASK_SLOTS - 1u)];
 }
 
-// True if a shadow caster on one of p_caster_mask's layers lies on the ray. With a mask, every hit is a candidate
-// (geometry is forced non-opaque) and only casters on the mask's layers are confirmed. Single exit and no return
-// before the query, as for every ray-query helper here: early returns have turned results into misses on one driver.
+// True if a shadow caster on one of p_caster_mask's layers lies on the ray. Without a mask (0xFFFFFFFF) this is the
+// opaque, first-hit query the passes used before masks were honored, unchanged. With a mask, every hit is a candidate
+// (geometry is forced non-opaque) and only casters on the mask's layers are confirmed.
+// Rules learned the hard way, keep them: one exit and no return before a query (an early return turned every result
+// into a miss on one Vulkan driver); one rayQueryInitializeEXT per query object, with constant flags (one object
+// initialized in two branches read every committed hit as none on D3D12; a single object with run-time flags worked
+// but made the transparent pass 0.08 ms slower on D3D12 for unmasked lights); a constant bound on the candidate loop.
 bool rt_caster_ray_hit(vec3 p_origin, vec3 p_dir, float p_t_max, uint p_instance_mask, uint p_caster_mask) {
-	bool masked = p_caster_mask != 0xFFFFFFFFu;
-	uint flags = gl_RayFlagsTerminateOnFirstHitEXT | (masked ? gl_RayFlagsNoOpaqueEXT : gl_RayFlagsOpaqueEXT);
-	rayQueryEXT rq;
-	rayQueryInitializeEXT(rq, RT_CASTER_TLAS, flags, p_instance_mask, p_origin, 0.0, p_dir, p_t_max);
-	for (uint i = 0u; i < RT_CASTER_MAX_CANDIDATES; i++) {
-		if (!rayQueryProceedEXT(rq)) {
-			break;
+	bool hit = false;
+	if (p_caster_mask == 0xFFFFFFFFu) {
+		rayQueryEXT rq;
+		rayQueryInitializeEXT(rq, RT_CASTER_TLAS, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT, p_instance_mask, p_origin, 0.0, p_dir, p_t_max);
+		while (rayQueryProceedEXT(rq)) {
 		}
-		// Only masked rays see candidates: opaque traversal commits every hit itself.
-		uint index = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq, false));
-		if ((rt_layers.data[RT_LIGHT_MASK_SLOTS + index] & p_caster_mask) != 0u) {
-			rayQueryConfirmIntersectionEXT(rq);
+		hit = rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT;
+	} else {
+		rayQueryEXT rq_masked;
+		rayQueryInitializeEXT(rq_masked, RT_CASTER_TLAS, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsNoOpaqueEXT, p_instance_mask, p_origin, 0.0, p_dir, p_t_max);
+		for (uint i = 0u; i < RT_CASTER_MAX_CANDIDATES; i++) {
+			if (!rayQueryProceedEXT(rq_masked)) {
+				break;
+			}
+			uint index = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq_masked, false));
+			if ((rt_layers.data[RT_LIGHT_MASK_SLOTS + index] & p_caster_mask) != 0u) {
+				rayQueryConfirmIntersectionEXT(rq_masked);
+			}
 		}
+		hit = rayQueryGetIntersectionTypeEXT(rq_masked, true) != gl_RayQueryCommittedIntersectionNoneEXT;
 	}
-	return rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT;
+	return hit;
 }
