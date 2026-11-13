@@ -4641,7 +4641,9 @@ RID RenderForwardClustered::_setup_render_pass_uniform_set(RenderListType p_rend
 	}
 	if (rt_shadows != nullptr) {
 		// Transparent receivers of ray traced shadows trace against this frame's scene.
-		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_ACCELERATION_STRUCTURE, 40, (rb_data.is_valid() && rb_data->rt_tlas.is_valid()) ? rb_data->rt_tlas : _get_rt_dummy_tlas()));
+		const bool has_tlas = rb_data.is_valid() && rb_data->rt_tlas.is_valid() && rb_data->rt_layer_buffer.is_valid();
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_ACCELERATION_STRUCTURE, 40, has_tlas ? rb_data->rt_tlas : _get_rt_dummy_tlas()));
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 41, has_tlas ? rb_data->rt_layer_buffer : rt_layer_default_buffer));
 	}
 #ifdef MODULE_TEXTURE_STREAMING_ENABLED
 	{
@@ -4879,8 +4881,9 @@ RID RenderForwardClustered::_setup_sdfgi_render_pass_uniform_set(RID p_albedo_te
 		uniforms.push_back(u);
 	}
 	if (rt_shadows != nullptr) {
-		// Likewise binding 40, declared by every fragment variant built with ray traced shadows.
+		// Likewise bindings 40 and 41, declared by every fragment variant built with ray traced shadows.
 		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_ACCELERATION_STRUCTURE, 40, _get_rt_dummy_tlas()));
+		uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_STORAGE_BUFFER, 41, rt_layer_default_buffer));
 	}
 
 	if (scene_shader.default_shader_sdfgi_rd.is_null()) {
