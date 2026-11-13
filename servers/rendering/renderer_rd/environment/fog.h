@@ -51,6 +51,7 @@ private:
 
 	bool rt_shadows = false; // The process shader traces lights with ray traced shadows.
 	RID rt_dummy_tlas; // Stands in for the scene's acceleration structure when none was built.
+	RID rt_dummy_layers; // Its layer table: no light mask excludes anything.
 
 	static int _get_fog_shader_group();
 	static int _get_fog_variant();
@@ -369,6 +370,7 @@ public:
 		RID directional_shadow_depth;
 		RID directional_light_buffer;
 		RID rt_tlas; // Top level acceleration structure of this frame, for lights with ray traced shadows. Invalid without ray tracing.
+		RID rt_layers; // Layer table of rt_tlas (light caster masks, instance layers), replaced together with it.
 		uint32_t rt_instance_mask = 0; // Instances that cast shadows.
 
 		// Objects related to our render buffer

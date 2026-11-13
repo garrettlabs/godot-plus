@@ -52,7 +52,7 @@ RTShadows::~RTShadows() {
 	shader.version_free(shader_version);
 }
 
-void RTShadows::trace(RID p_tlas, RID p_depth, RID p_normal_roughness, RID p_visibility_buffer, const Size2i &p_size, const Projection &p_projection, const Transform3D &p_cam_transform, const LocalVector<Light> &p_lights, uint32_t p_instance_mask, uint32_t p_soft_samples, uint32_t p_frame) {
+void RTShadows::trace(RID p_tlas, RID p_layers, RID p_depth, RID p_normal_roughness, RID p_visibility_buffer, const Size2i &p_size, const Projection &p_projection, const Transform3D &p_cam_transform, const LocalVector<Light> &p_lights, uint32_t p_instance_mask, uint32_t p_soft_samples, uint32_t p_frame) {
 	ERR_FAIL_COND(p_lights.is_empty());
 	UniformSetCacheRD *uniform_set_cache = UniformSetCacheRD::get_singleton();
 	MaterialStorage *material_storage = MaterialStorage::get_singleton();
@@ -90,10 +90,11 @@ void RTShadows::trace(RID p_tlas, RID p_depth, RID p_normal_roughness, RID p_vis
 	RD::Uniform u_lights(RD::UNIFORM_TYPE_STORAGE_BUFFER, 3, lights_buffer);
 	RD::Uniform u_visibility(RD::UNIFORM_TYPE_STORAGE_BUFFER, 4, p_visibility_buffer);
 	RD::Uniform u_params(RD::UNIFORM_TYPE_UNIFORM_BUFFER, 5, params_buffer);
+	RD::Uniform u_layers(RD::UNIFORM_TYPE_STORAGE_BUFFER, 6, p_layers);
 
 	RD::ComputeListID compute_list = RD::get_singleton()->compute_list_begin();
 	RD::get_singleton()->compute_list_bind_compute_pipeline(compute_list, pipeline);
-	RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(compute_shader, 0, u_depth, u_normal, u_tlas, u_lights, u_visibility, u_params), 0);
+	RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(compute_shader, 0, u_depth, u_normal, u_tlas, u_lights, u_visibility, u_params, u_layers), 0);
 	RD::get_singleton()->compute_list_dispatch_threads(compute_list, p_size.x, p_size.y, 1);
 	RD::get_singleton()->compute_list_end();
 }
