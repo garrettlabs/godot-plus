@@ -192,6 +192,12 @@ private:
 	int scatter_search_countdown = 0;
 	Mutex scatter_mutex;
 	LocalVector<FlowScatterRD::Light> scatter_lights;
+	// Where the gas is, in meters, as the render side last saw it (under
+	// scatter_mutex): `known` once a frame has been drawn, `valid` when the grid
+	// held any gas then. Lights are picked by their distance to these bounds.
+	AABB scatter_gas_bounds;
+	bool scatter_gas_known = false;
+	bool scatter_gas_valid = false;
 	void _gather_scatter_lights();
 	void _fill_scatter_shadows(LocalVector<FlowScatterRD::Light> &r_lights, const PagedArray<RID> *p_instances, const RID &p_shadow_atlas, uint32_t p_flags) const;
 

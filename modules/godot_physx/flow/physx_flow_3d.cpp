@@ -307,6 +307,9 @@ void PhysXFlow3D::_stop() {
 	last_temperature.clear();
 	last_smoke_source = nullptr;
 	gas_bounds = AABB();
+	MutexLock scatter_lock(scatter_mutex);
+	scatter_gas_known = false;
+	scatter_gas_valid = false;
 }
 
 void PhysXFlow3D::_fill_scatter_shadows(LocalVector<FlowScatterRD::Light> &r_lights, const PagedArray<RID> *p_instances, const RID &p_shadow_atlas, uint32_t p_flags) const {
@@ -385,7 +388,21 @@ void PhysXFlow3D::render_rd(PhysXFlowRenderEffect *p_effect, RenderingDevice *p_
 		_fill_scatter_shadows(lights, p_lights, p_shadow_atlas, receive);
 	}
 	FlowBackend::ScatterSource source;
-	const uint64_t out = FlowBackend::grid_render_rd(grid, p_view, p_projection, p_size.x, p_size.y, p_depth.get_id(), p_size.x, p_size.y, p_color.get_id(), lights.is_empty() ? nullptr : &source, p_first_view);
+	const uint64_t out = FlowBackend::grid_render_rd(grid, p_view, p_projection, p_size.x, p_size.y, p_depth.get_id(), p_size.x, p_size.y, p_color.get_id(), light_scattering ? &source : nullptr, p_first_view);
+	if (light_scattering && out != 0) {
+		// Where the gas is, for the next pick of lights. Flow units to meters,
+		// grown by one block (the layer's bounds are of its active blocks).
+		const float inv = 1.0f / FlowBackend::UNITS_PER_METER;
+		MutexLock lock(scatter_mutex);
+		scatter_gas_known = true;
+		scatter_gas_valid = source.has_bounds;
+		if (source.has_bounds) {
+			const Vector3 lo = Vector3(source.world_min[0], source.world_min[1], source.world_min[2]) * inv;
+			const Vector3 hi = Vector3(source.world_max[0], source.world_max[1], source.world_max[2]) * inv;
+			const Vector3 block = Vector3(source.block_size_world[0], source.block_size_world[1], source.block_size_world[2]) * inv;
+			scatter_gas_bounds = AABB(lo - block, hi - lo + block * 2.0f);
+		}
+	}
 	stat_render_calls++;
 	stat_render_outputs += out != 0 ? 1 : 0;
 	if (out != 0 && out != p_color.get_id()) {
@@ -394,7 +411,7 @@ void PhysXFlow3D::render_rd(PhysXFlowRenderEffect *p_effect, RenderingDevice *p_
 	if (!lights.is_empty() && !source.valid) {
 		stat_scatter_no_source++;
 	}
-	if (out != 0 && source.valid) {
+	if (out != 0 && source.valid && !lights.is_empty()) {
 		stat_scatter_passes++;
 		// Before the Flow frame ends: its volume and table are this frame's.
 		FlowScatterRD::Params params;
@@ -714,6 +731,13 @@ void PhysXFlow3D::_gather_scatter_lights() {
 			float score = 0.0f;
 		};
 		LocalVector<Candidate> candidates;
+		AABB gas;
+		bool gas_known = false;
+		{
+			MutexLock lock(scatter_mutex);
+			gas = scatter_gas_bounds;
+			gas_known = scatter_gas_known && scatter_gas_valid;
+		}
 		constexpr float GAS_REACH = 20.0f; // how far gas may have spread from draw_center
 		for (const ObjectID &id : scatter_light_ids) {
 			Light3D *l = Object::cast_to<Light3D>(ObjectDB::get_instance(id));
@@ -725,9 +749,21 @@ void PhysXFlow3D::_gather_scatter_lights() {
 			const float energy = l->get_param(Light3D::PARAM_ENERGY) * l->get_param(Light3D::PARAM_VOLUMETRIC_FOG_ENERGY);
 			const float range = l->get_param(Light3D::PARAM_RANGE);
 			const Transform3D xf = l->get_global_transform();
-			const float d = xf.origin.distance_to(draw_center);
-			if (energy <= 0.0f || range <= 0.0f || d > range + GAS_REACH) {
-				continue;
+			// Where the gas is, once the render side has reported it: the distance
+			// to the nearest point of its bounds, and the light must reach that.
+			// Until then (or with no gas), near the emitters or the node.
+			float d;
+			if (gas_known) {
+				const Vector3 nearest = xf.origin.clamp(gas.position, gas.position + gas.size);
+				d = xf.origin.distance_to(nearest);
+				if (energy <= 0.0f || range <= 0.0f || d > range) {
+					continue;
+				}
+			} else {
+				d = xf.origin.distance_to(draw_center);
+				if (energy <= 0.0f || range <= 0.0f || d > range + GAS_REACH) {
+					continue;
+				}
 			}
 			Candidate c;
 			const Color col = l->get_color().srgb_to_linear() * energy;
