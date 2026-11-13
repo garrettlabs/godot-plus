@@ -40,6 +40,7 @@ SelfList<ParticleProcessMaterial>::List ParticleProcessMaterial::dirty_materials
 Mutex ParticleProcessMaterial::shader_map_mutex;
 HashMap<ParticleProcessMaterial::MaterialKey, ParticleProcessMaterial::ShaderData, ParticleProcessMaterial::MaterialKey> ParticleProcessMaterial::shader_map;
 RBSet<String> ParticleProcessMaterial::min_max_properties;
+MaterialShaderLRU<ParticleProcessMaterial::MaterialKey> ParticleProcessMaterial::shader_lru;
 ParticleProcessMaterial::ShaderNames *ParticleProcessMaterial::shader_names = nullptr;
 
 void ParticleProcessMaterial::init_shaders() {
@@ -153,6 +154,11 @@ void ParticleProcessMaterial::init_shaders() {
 void ParticleProcessMaterial::finish_shaders() {
 	dirty_materials.clear();
 
+	{
+		MutexLock lock(shader_map_mutex);
+		shader_lru.clear(shader_map);
+	}
+
 	memdelete(shader_names);
 	shader_names = nullptr;
 }
@@ -169,24 +175,14 @@ void ParticleProcessMaterial::_update_shader() {
 
 	{
 		MutexLock lock(shader_map_mutex);
-		ShaderData *v = shader_map.getptr(current_key);
-		if (v) {
-			v->users--;
-			if (v->users == 0) {
-				// Deallocate shader, as it's no longer in use.
-				RS::get_singleton()->free_rid(v->shader);
-				shader_map.erase(current_key);
-				shader_rid = RID();
-			}
-		}
+		shader_lru.release(shader_map, current_key);
 
 		current_key = mk;
 
-		v = shader_map.getptr(mk);
+		ShaderData *v = shader_lru.acquire(shader_map, mk);
 		if (v) {
 			shader_rid = v->shader;
 			RS::get_singleton()->material_set_shader(_get_material(), shader_rid);
-			v->users++;
 			return;
 		}
 	}
@@ -1364,7 +1360,7 @@ void ParticleProcessMaterial::_update_shader() {
 
 	MutexLock lock(shader_map_mutex);
 
-	ShaderData *v = shader_map.getptr(mk);
+	ShaderData *v = shader_lru.acquire(shader_map, mk);
 	if (unlikely(v)) {
 		// We raced and managed to create the same key concurrently, so we'll free the shader we just created,
 		// given we know it isn't used, and use the winner.
@@ -1372,13 +1368,11 @@ void ParticleProcessMaterial::_update_shader() {
 	} else {
 		ShaderData shader_data;
 		shader_data.shader = new_shader;
-		// ShaderData will be inserted with a users count of 0, but we
-		// increment unconditionally outside this if block, whilst still under lock.
+		shader_data.users = 1;
 		v = &shader_map.insert(mk, shader_data)->value;
 	}
 
 	shader_rid = v->shader;
-	v->users++;
 
 	RS::get_singleton()->material_set_shader(_get_material(), shader_rid);
 }
@@ -2844,12 +2838,7 @@ ParticleProcessMaterial::~ParticleProcessMaterial() {
 	MutexLock lock(shader_map_mutex);
 
 	if (shader_map.has(current_key)) {
-		shader_map[current_key].users--;
-		if (shader_map[current_key].users == 0) {
-			//deallocate shader, as it's no longer in use
-			RS::get_singleton()->free_rid(shader_map[current_key].shader);
-			shader_map.erase(current_key);
-		}
+		shader_lru.release(shader_map, current_key);
 
 		RS::get_singleton()->material_set_shader(_get_material(), RID());
 	}

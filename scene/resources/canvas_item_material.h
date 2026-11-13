@@ -81,9 +81,11 @@ private:
 	struct ShaderData {
 		RID shader;
 		int users = 0;
+		List<MaterialKey>::Element *unused_elem = nullptr;
 	};
 
 	static HashMap<MaterialKey, ShaderData, MaterialKey> shader_map;
+	static MaterialShaderLRU<MaterialKey> shader_lru;
 
 	MaterialKey current_key;
 
