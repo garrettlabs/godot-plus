@@ -3563,6 +3563,11 @@
 		<member name="rendering/streamline/dlss_ray_reconstruction_preset" type="String" setter="" getter="" default="&quot;?&quot;">
 			The default NVIDIA DLSS Ray Reconstruction preset to use.
 		</member>
+		<member name="rendering/streamline/allow_ota" type="bool" setter="" getter="" default="false">
+			If [code]false[/code], the DLSS, Reflex and related plugins that ship beside the executable are the ones that run, and NVIDIA's over-the-air updater ([code]nvngx_update.exe[/code]) is never started. If [code]true[/code], Streamline checks for and loads downloaded plugin updates, which restores over-the-air updates but starts about fifteen updater processes at launch.
+			[b]Note:[/b] The updater processes are NVIDIA's own and inherit the engine's standard input, output and error handles, so a scripted launch with output redirected waits for them to exit.
+			[b]Note:[/b] Streamline is not initialized at all when running with [code]--headless[/code].
+		</member>
 		<member name="rendering/streamline/reflex_frame_limit_us" type="int" setter="" getter="" default="0">
 			If not [code]0[/code], enables NVIDIA Reflex Frame Rate Limiter, which intelligently reduces framerate whilst keeping latency as low as possible. The expected value is in micro-seconds. Example: 60 FPS = 16667 us (1,000,000 us / 60 FPS)
 		</member>

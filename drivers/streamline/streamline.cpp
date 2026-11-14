@@ -60,6 +60,7 @@ void Streamline::register_singleton() {
 	GDREGISTER_CLASS(Streamline);
 	Engine::get_singleton()->add_singleton(Engine::Singleton("Streamline", Streamline::get_singleton()));
 
+	GLOBAL_DEF_RST("rendering/streamline/allow_ota", false);
 	GLOBAL_DEF("rendering/streamline/streamline_log", false);
 	GLOBAL_DEF("rendering/streamline/streamline_imgui", false);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/streamline/reflex_mode", PROPERTY_HINT_RANGE, "0,2,1"), 0);

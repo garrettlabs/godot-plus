@@ -378,7 +378,10 @@ void StreamlineContext::initialize(bool d3d12) {
 
 	pref.renderAPI = d3d12 ? sl::RenderAPI::eD3D12 : sl::RenderAPI::eVulkan;
 	pref.applicationId = 0x90d07004;
-	pref.flags = sl::PreferenceFlags::eAllowOTA | sl::PreferenceFlags::eLoadDownloadedPlugins | sl::PreferenceFlags::eDisableCLStateTracking;
+	pref.flags = sl::PreferenceFlags::eDisableCLStateTracking;
+	if (bool(GLOBAL_GET("rendering/streamline/allow_ota"))) {
+		pref.flags |= sl::PreferenceFlags::eAllowOTA | sl::PreferenceFlags::eLoadDownloadedPlugins;
+	}
 
 	if (bool(GLOBAL_GET("rendering/streamline/streamline_log"))) {
 		pref.logLevel = sl::LogLevel::eVerbose;
