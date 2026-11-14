@@ -2709,8 +2709,10 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 	}
 #endif
 
-	// start streamline now that we know the API.
-	if (rendering_driver == "vulkan") {
+	// start streamline now that we know the API. A headless run creates no rendering device, so there is nothing to initialize.
+	if (display_driver == NULL_DISPLAY_DRIVER) {
+		// Skip Streamline entirely.
+	} else if (rendering_driver == "vulkan") {
 		Streamline::get_singleton()->emit_marker(STREAMLINE_MARKER_INITIALIZE_VULKAN);
 	} else if (rendering_driver == "d3d12") {
 		Streamline::get_singleton()->emit_marker(STREAMLINE_MARKER_INITIALIZE_D3D12);
