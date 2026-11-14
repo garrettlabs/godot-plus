@@ -2139,6 +2139,16 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 		} else {
 			int worker_threads = GLOBAL_GET("threading/worker_pool/max_threads");
 			float low_priority_ratio = GLOBAL_GET("threading/worker_pool/low_priority_thread_ratio");
+			// With rendering on its own thread, the rendering server runs as one long-lived pool task and
+			// occupies a pool thread for the whole run (it no longer runs other tasks while it waits for
+			// commands), so add that thread to keep the configured capacity for everything else.
+			const bool pump_thread = separate_thread_render != -1 ? separate_thread_render == 1 : (int)ProjectSettings::get_singleton()->get_setting("rendering/driver/threads/thread_model", OS::RENDER_THREAD_SAFE) == OS::RENDER_SEPARATE_THREAD;
+			if (pump_thread) {
+				if (worker_threads < 0) {
+					worker_threads = OS::get_singleton()->get_default_thread_pool_size();
+				}
+				worker_threads += 1;
+			}
 			WorkerThreadPool::get_singleton()->init(worker_threads, low_priority_ratio);
 		}
 #else

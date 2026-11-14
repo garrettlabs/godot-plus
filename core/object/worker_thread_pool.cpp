@@ -536,7 +536,9 @@ void WorkerThreadPool::_wait_collaboratively(ThreadData *p_caller_pool_thread, T
 				}
 			}
 
-			if (p_caller_pool_thread->pool->task_queue.first()) {
+			// A pump task (the rendering server waiting for its command queue) must not run other tasks:
+			// a long one would delay the commands it is there to run, and the main thread waits on them.
+			if (p_task != ThreadData::YIELDING && p_caller_pool_thread->pool->task_queue.first()) {
 				task_to_process = task_queue.first()->self();
 				if ((p_task == ThreadData::YIELDING || p_caller_pool_thread->has_pump_task == true) && task_to_process->is_pump_task) {
 					task_to_process = nullptr;
