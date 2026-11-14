@@ -115,6 +115,7 @@ public:
 };
 
 DWORD CrashHandlerException(EXCEPTION_POINTERS *ep) {
+	fflush(stdout); // Buffered output must land before the backtrace.
 	HANDLE process = GetCurrentProcess();
 	HANDLE hThread = GetCurrentThread();
 	DWORD offset_from_symbol = 0;
