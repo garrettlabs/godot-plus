@@ -216,6 +216,8 @@ void StdLogger::logv(const char *p_format, va_list p_list, bool p_err) {
 	}
 
 	if (p_err) {
+		// Keep stdout and stderr in order when stdout is buffered (a no-op on an unbuffered stream).
+		fflush(stdout);
 		vfprintf(stderr, p_format, p_list);
 	} else {
 		vprintf(p_format, p_list);

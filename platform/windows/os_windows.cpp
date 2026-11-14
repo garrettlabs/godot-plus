@@ -160,6 +160,25 @@ void RedirectStream(const char *p_file_name, const char *p_mode, FILE *p_cpp_str
 	}
 }
 
+// Standard output that is not a console is fully buffered, so `print()` does not cost a write per line;
+// `flush_stdout_on_print` decides whether each line is flushed. Consoles and standard error stay unbuffered.
+static void set_stdout_buffering() {
+	const int fd = _fileno(stdout);
+	if (fd < 0) {
+		return;
+	}
+	const HANDLE h = reinterpret_cast<HANDLE>(_get_osfhandle(fd));
+	if (h == INVALID_HANDLE_VALUE) {
+		return;
+	}
+	const DWORD type = GetFileType(h);
+	if (type == FILE_TYPE_DISK || type == FILE_TYPE_PIPE) {
+		setvbuf(stdout, nullptr, _IOFBF, 64 * 1024);
+	} else {
+		setvbuf(stdout, nullptr, _IONBF, 0);
+	}
+}
+
 void RedirectIOToConsole() {
 	// Save current handles.
 	HANDLE h_stdin = GetStdHandle(STD_INPUT_HANDLE);
@@ -2977,6 +2996,7 @@ OS_Windows::OS_Windows(HINSTANCE _hInstance) {
 #ifndef WINDOWS_SUBSYSTEM_CONSOLE
 	RedirectIOToConsole();
 #endif
+	set_stdout_buffering();
 
 	SetConsoleOutputCP(CP_UTF8);
 	SetConsoleCP(CP_UTF8);

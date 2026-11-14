@@ -44,6 +44,13 @@ void WindowsTerminalLogger::logv(const char *p_format, va_list p_list, bool p_er
 		return;
 	}
 
+	if (!p_err && OS::get_singleton()->get_stdout_type() != OS::STD_HANDLE_CONSOLE && _fileno(stdout) >= 0) {
+		// Redirected to a file or a pipe: go through the buffered C stream (see `set_stdout_buffering`),
+		// flushed per line only when `flush_stdout_on_print` is set.
+		StdLogger::logv(p_format, p_list, p_err);
+		return;
+	}
+
 	const int static_buffer_size = 1024;
 	char static_buf[static_buffer_size];
 	char *buf = static_buf;
@@ -63,6 +70,11 @@ void WindowsTerminalLogger::logv(const char *p_format, va_list p_list, bool p_er
 	CharString cstr_buf = str_buf.utf8();
 	if (cstr_buf.length() == 0) {
 		return;
+	}
+
+	if (p_err) {
+		// Keep stdout and stderr in order when stdout is buffered (a no-op on an unbuffered stream).
+		fflush(stdout);
 	}
 
 	DWORD written = 0;

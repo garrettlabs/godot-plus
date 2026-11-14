@@ -337,6 +337,7 @@ static String find_debugsymbols(const String &p_exec_path) {
 }
 
 extern void CrashHandlerException(int signal) {
+	fflush(stdout); // Buffered output must land before the backtrace.
 	CrashHandlerData data;
 
 	if (OS::get_singleton() == nullptr || OS::get_singleton()->is_disable_crash_handler() || IsDebuggerPresent()) {
