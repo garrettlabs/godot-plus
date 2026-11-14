@@ -72,6 +72,11 @@ void WindowsTerminalLogger::logv(const char *p_format, va_list p_list, bool p_er
 		return;
 	}
 
+	if (p_err) {
+		// Keep stdout and stderr in order when stdout is buffered (a no-op on an unbuffered stream).
+		fflush(stdout);
+	}
+
 	DWORD written = 0;
 	HANDLE h = p_err ? GetStdHandle(STD_ERROR_HANDLE) : GetStdHandle(STD_OUTPUT_HANDLE);
 	WriteFile(h, cstr_buf.ptr(), cstr_buf.length(), &written, nullptr);

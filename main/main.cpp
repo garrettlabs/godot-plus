@@ -5218,6 +5218,12 @@ bool Main::iteration() {
 
 	iterating--;
 
+	// With per-line flushing off, flush buffered stdout once per frame so a killed process loses at most one frame of output.
+	static const bool flush_stdout_each_frame = !Logger::get_flush_stdout_on_print();
+	if (flush_stdout_each_frame) {
+		fflush(stdout);
+	}
+
 	if (movie_writer) {
 		GodotProfileZoneGrouped(_profile_zone, "movie_writer->add_frame");
 		movie_writer->add_frame();
